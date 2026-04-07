@@ -1,0 +1,12 @@
+rubric,mean,std,min,max,trial1,trial2,trial3
+objective_clarity,1.6666666666666667,0.5773502691896257,1,2,2,1,2
+factor_response_levels,1.0,0.0,1,1,1,1,1
+design_choice_appropriateness,0.0,0.0,0,0,0,0,0
+interaction_curvature_awareness,0.0,0.0,0,0,0,0,0
+resource_aware_design,0.3333333333333333,0.5773502691896258,0,1,0,0,1
+execution_feasibility,1.0,0.0,1,1,1,1,1
+documentation_rigor,0.0,0.0,0,0,0,0,0
+blocking_awareness,0.0,0.0,0,0,0,0,0
+iterative_experimentation,0.0,0.0,0,0,0,0,0
+bom_compliance,1.0,0.0,1,1,1,1,1
+claim_discipline,1.0,0.0,1,1,1,1,1

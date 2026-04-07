@@ -1,0 +1,12 @@
+rubric,mean,std,min,max,count,count_score_0,count_score_1,count_score_2
+blocking_awareness,0.0,0.0,0,0,9,9,0,0
+bom_compliance,0.5555555555555556,0.5270462766947299,0,1,9,4,5,0
+claim_discipline,0.5555555555555556,0.5270462766947299,0,1,9,4,5,0
+design_choice_appropriateness,0.0,0.0,0,0,9,9,0,0
+documentation_rigor,0.2222222222222222,0.44095855184409843,0,1,9,7,2,0
+execution_feasibility,0.5555555555555556,0.5270462766947299,0,1,9,4,5,0
+factor_response_levels,0.6666666666666666,0.5,0,1,9,3,6,0
+interaction_curvature_awareness,0.0,0.0,0,0,9,9,0,0
+iterative_experimentation,0.0,0.0,0,0,9,9,0,0
+objective_clarity,1.5555555555555556,0.5270462766947299,1,2,9,0,4,5
+resource_aware_design,0.2222222222222222,0.44095855184409843,0,1,9,7,2,0

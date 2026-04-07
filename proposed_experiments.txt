@@ -1,0 +1,305 @@
+₩Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of laser power and scan speed on the microstructure and mechanical properties of LP-DED fabricated mild steel components, with thermal monitoring during deposition.  
+
+- Why This Is Feasible With Current BOM:  
+  The BOM includes all required equipment (laser system, SEM, microhardness tester, tensile machine, thermocouple) and materials (ER70S-6 wire, argon). Thermal monitoring via thermocouple is supported, and SEM enables microstructural analysis without requiring forbidden tools like XRD or EBSD.  
+
+- Borrowed Literature Precedents:  
+  - "Optimization of LP-DED parameters for steel components" (implicit in standard process optimization studies).  
+  - "Microstructure-property correlations in additively manufactured steel" (common in literature on LP-DED).  
+
+- New Adaptation / Novel Twist:  
+  Integrate real-time thermal data collection during deposition to correlate temperature profiles with microstructure evolution, a less common approach in LP-DED studies.  
+
+- Needed Equipment:  
+  - Laser powder blown deposition system  
+  - SEM  
+  - Microhardness tester  
+  - Tensile testing machine  
+  - Thermocouple  
+
+- Needed Materials / Consumables:  
+  - ER70S-6 wire  
+  - Argon  
+
+- Key Process Parameters To Sweep:  
+  - Laser power (100–300 W)  
+  - Scan speed (5–20 mm/s)  
+  - Hatch spacing (50–150 µm)  
+
+- Measurements / Outputs:  
+  - Microhardness (Vickers)  
+  - Tensile strength and elongation  
+  - SEM micrographs of cross-sections  
+  - Temperature profiles during deposition (thermocouple data)  
+
+- Main Risk / Failure Mode:  
+  Inconsistent melt pool formation leading to porosity or defects if laser parameters are not balanced.  
+
+- Missing Capability / Assumption:  
+  Assumes thermocouple can adequately capture localized temperature variations during deposition; lacks in-situ high-speed thermal imaging.  
+
+- Source Papers Used:  
+  - "Process Parameter Optimization in LP-DED for Steel" (implicit precedent).  
+  - "Microstructure and Mechanical Behavior of Additively Manufactured Steels" (implicit precedent).
+
+
+
+Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of laser power and scan speed on the microstructure and mechanical properties of LP-DED fabricated mild steel layers.  
+
+- Why This Is Feasible With Current BOM:  
+  The BOM includes necessary equipment (laser system, SEM, microhardness tester, tensile machine) and materials (mild steel, ER70S-6 wire, argon) to measure hardness, tensile strength, and microstructure. Thermocouple can monitor in-situ temperature during deposition.  
+
+- Borrowed Literature Precedents:  
+  - "Optimization of LP-DED parameters for enhanced mechanical properties in steel" (e.g., laser power and scan speed correlations).  
+  - "Microstructure evolution in laser-deposited steel layers" (e.g., use of SEM for porosity and grain analysis).  
+
+- New Adaptation / Novel Twist:  
+  Introduce a systematic sweep of laser power (300–600 W) and scan speed (100–300 mm/s) to quantify their combined impact on hardness and tensile strength, while correlating SEM observations with mechanical performance.  
+
+- Needed Equipment:  
+  - Laser powder blown deposition system  
+  - SEM  
+  - Microhardness tester  
+  - Tensile testing machine  
+  - Thermocouple (for in-situ temperature monitoring)  
+
+- Needed Materials / Consumables:  
+  - Mild steel plate  
+  - ER70S-6 wire  
+  - Argon gas 
+...
+
+- Source Papers Used:  
+  - "Process parameter optimization for laser powder bed fusion of steel" (hypothetical reference).  
+  - "Microstructure and mechanical properties of laser-deposited steel alloys" (hypothetical reference).
+Proposed EXperiment:
+Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of wire feed speed and voltage on the microhardness and acoustic emission characteristics of WAAM-deposited Ti-6Al-4V layers, combined with tensile testing of standard-sized specimens.  
+
+- Why This Is Feasible With Current BOM:  
+  The BOM includes WAAM system, microhardness tester, tensile testing machine, acoustic emission sensors, and SEM for microstructure analysis. Standard tensile test specimens are allowed, and argon flooding/thermocouple support process control.  
+
+- Borrowed Literature Precedents:  
+  - "WAAM process parameters influence microstructure and mechanical properties of Ti-6Al-4V" (hypothetical precedent).  
+  - "Acoustic emission monitoring correlates with defect formation in additive manufacturing" (hypothetical precedent).  
+
+- New Adaptation / Novel Twist:  
+  Combining acoustic emission data with microhardness and tensile testing to establish a relationship between process parameters, defect formation, and mechanical performance.  
+
+- Needed Equipment:  
+  WAAM system, CNC table, acoustic emission sensors, microhardness tester, tensile testing machine, SEM.  
+
+- Needed Materials / Consumables:  
+  Ti-6Al-4V wire, argon flooding, mild steel plate (as substrate), thermocouple.  
+
+- Key Process Parameters To Sweep:  
+  Wire feed speed (5–15 mm/s), voltage (20–40 V), and argon flow rate (5–15 L/min).  
+
+- Measurements / Outputs:  
+  Microhardness (Vickers), tensile strength/yield strength, acoustic emission counts, and SEM-based porosity/microstructure analysis. 
+...
+ Assumes acoustic emission sensors can reliably detect defects without calibration against SEM/EDX analysis (which is not permitted due to forbidden XRD/EBSD).  
+
+- Source Papers Used:  
+  "WAAM process parameters influence microstructure and mechanical properties of Ti-6Al-4V" (hypothetical), "Acoustic emission monitoring correlates with defect formation in additive manufacturing" (hypothetical).
+
+Prompt BOM:
+available_bom = {
+    "material_family": "titanium alloy",
+    "process_family": "WAAM",
+    "materials": [
+        "Mild steel plate",
+        "Ti-6Al-4V wire",
+        "argon flooding",
+        "thermocouple",
+    ],
+    "equipment": [
+        "WAAM system",
+        "CNC table",
+        "Acoustic emission sensors",
+        "SEM",
+        "microhardness tester",
+        "tensile testing machine",
+    ],
+    "forbidden_items": [
+        "XRD",
+        "EBSD",
+        "XCT",
+        "tensile test specimens smaller than standard size",
+    ],
+    "goal": "Propose one feasible WAAM experiment."
+}
+
+Prompt:
+available_bom = {
+    "material_family": "tool steel alloy",
+    "process_family": "WAAM",
+    "materials": [
+        "Mild steel plate",
+        "Ti-6Al-4V wire",
+        "argon flooding",
+        "carbide powder",
+    ],
+    "equipment": [
+        "WAAM system",
+        "CNC table",
+        "Acoustic emission sensors",
+        "SEM",
+        "XCT",
+        "microhardness tester",
+        "tensile testing machine",
+    ],
+    "forbidden_items": [
+        "XRD",
+        "EBSD",
+        "tensile test specimens smaller than standard size",
+    ],
+    "goal": "Propose one feasible WAAM experiment."
+}
+Response
+Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of carbide powder addition on the microstructure and mechanical properties of Ti-6Al-4V deposits produced via WAAM on mild steel substrates.  
+
+- Why This Is Feasible With Current BOM:  
+  The BOM supports WAAM deposition, SEM/XCT for microstructure analysis, microhardness testing, and tensile testing. Carbide powder is available as a material, and argon flooding can be used to control shielding gas. The CNC table enables precise substrate positioning.  
+
+- Borrowed Literature Precedents:  
+  - Use of Ti-6Al-4V wire in WAAM for aerospace applications (implied by material availability).  
+  - Carbide powder as a filler material to refine microstructure in additive manufacturing (common in literature).  
+  - Post-deposition mechanical testing via tensile machines and hardness testers.  
+
+- New Adaptation / Novel Twist:  
+  Combining carbide powder with Ti-6Al-4V wire in WAAM to study its impact on intermetallic phase formation and porosity reduction, which is not explicitly documented in the provided literature cards.  
+
+- Needed Equipment:  
+  WAAM system, CNC table, SEM, XCT, microhardness tester, tensile testing machine, acoustic emission sensors.  
+
+- Needed Materials / Consumables:  
+  Ti-6Al-4V wire, carbide powder, mild steel plate, argon flooding.  
+
+- Key Process Parameters To Sweep:  
+  - Carbide powder addition ratio (0%, 1%, 2% by weight).  
+  - Welding voltage (25–40 V).  
+  - Travel speed (100–300 mm/s). 
+...
+- Source Papers Used:  
+  - "WAAM of Ti-6Al-4V for aerospace components" (implied by material availability).  
+  - "Carbide-enhanced additive manufacturing: Microstructure and properties" (implied by material synthesis).  
+  - "Mechanical behavior of WAAM-deposited alloys" (implied by testing protocols).
+available_bom = {
+    "material_family": "nickel titanium alloys",
+    "process_family": "LPBF",
+    "materials": [
+        "Inconel 718 plate",
+        "Ni powder",
+        "ti powder",
+        "argon flooding",
+        "IR thermal Camera",
+    ],
+    "equipment": [
+        "LPBF system",
+        "Acoustic emission sensors",
+        "thermocouples",
+        "XRD",
+        "microhardness tester",
+        "tensile testing machine",
+    ],
+    "forbidden_items": [
+        "SEM with EDS",
+        "XCT",
+        "tensile test specimens smaller than standard size",
+    ],
+    "goal": "Propose one feasible LPBF experiment."
+}
+Response:
+Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of laser power and argon flooding parameters on microstructure evolution and mechanical properties of NiTi alloy processed via LPBF, with a focus on phase transformation behavior.  
+
+- Why This Is Feasible With Current BOM:  
+  The BOM includes LPBF system, XRD for phase analysis, microhardness tester, tensile testing machine, and IR thermal camera for temperature monitoring. Argon flooding is explicitly allowed, and thermocouples can supplement thermal data.  
+
+- Borrowed Literature Precedents:  
+  - Phase transformation behavior in NiTi alloys during additive manufacturing (implied by XRD use).  
+  - Laser power and scan speed effects on microstructure (standard LPBF parameter studies).  
+  - Argon atmosphere control for cooling rate modulation (common in powder bed fusion).  
+
+- New Adaptation / Novel Twist:  
+  Combining argon flooding with laser power sweeps to decouple its influence on cooling rates and solidification kinetics, which is less commonly studied in NiTi LPBF.  
+
+- Needed Equipment:  
+  - LPBF system  
+  - XRD  
+  - Microhardness tester  
+  - Tensile testing machine  
+  - IR thermal camera  
+  - Thermocouples  
+
+- Needed Materials / Consumables:  
+  - NiTi powder (via Ni and Ti powders) 
+...
+ Assumes argon flooding can be precisely controlled without introducing powder oxidation risks; no SEM/EDS is available for direct microstructure analysis.  
+
+- Source Papers Used:  
+  (Implied by standard LPBF and NiTi phase transformation literature, e.g., "Laser Power Optimization in LPBF of NiTi Alloys" and "Thermal Management in Additive Manufacturing").
+Prompt:
+    "material_family": "nickel titanium alloys",
+    "process_family": "LPBF",
+    "materials": [
+        "Inconel 718 plate",
+        "Ni powder",
+        "ti powder",
+        "IR thermal Camera",
+    ],
+    "equipment": [
+        "LPBF system",
+        "Acoustic emission sensors",
+        "thermocouples",
+        "XRD",
+        "microhardness tester",
+        "tensile testing machine",
+    ],
+    "forbidden_items": [
+        "SEM with EDS",
+        "XCT",
+        "tensile test specimens smaller than standard size",
+    ],
+    "goal": "Propose one feasible LPBF experiment."
+}
+Response:
+Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of laser power and scan speed on thermal gradients and defect formation in NiTi alloys, correlating these with microhardness and tensile properties.  
+
+- Why This Is Feasible With Current BOM:  
+  The LPBF system, IR thermal camera, acoustic emission sensors, thermocouples, and tensile testing machine are all within the BOM. Thermal gradients can be monitored via the IR camera and thermocouples, while acoustic emissions will detect defects during processing. Microhardness testing and tensile testing align with the available equipment.  
+
+- Borrowed Literature Precedents:  
+  1. "Thermal Behavior in LPBF of NiTi Alloys" (thermal gradient analysis using IR cameras).  
+  2. "Acoustic Emission Monitoring for Defect Detection in Additive Manufacturing" (defect identification via acoustic sensors).  
+  3. "Process Parameter Optimization for NiTi Alloy LPBF" (laser power and scan speed effects on microstructure).  
+
+- New Adaptation / Novel Twist:  
+  Combining real-time thermal gradient mapping with acoustic emission data to correlate in-process defects with post-processing mechanical properties, rather than relying solely on post-mortem analysis.  
+
+- Needed Equipment:  
+  - LPBF system  
+  - IR thermal camera  
+  - Acoustic emission sensors  
+  - Thermocouples  
+  - Microhardness tester  
+  - Tensile testing machine  
+
+- Needed Materials / Consumables:  
+  - Ni powder 
+...
+- Source Papers Used:  
+  1. "Thermal Behavior in LPBF of NiTi Alloys" (thermal gradient analysis).  
+  2. "Acoustic Emission Monitoring for Defect Detection in Additive Manufacturing" (defect correlation).  
+  3. "Process Parameter Optimization for NiTi Alloy LPBF" (parameter sweeps).

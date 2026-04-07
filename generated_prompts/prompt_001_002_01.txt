@@ -1,0 +1,206 @@
+You are a strict evaluator for experiment proposals in engineering research.
+
+Your task is to evaluate whether a proposed experiment is a rigorous and feasible experiment proposal.
+
+The proposal must be evaluated using the rubric below.
+The proposal must also be checked against the provided available BOM, equipment list, materials list, forbidden items, and other setup constraints.
+
+Scoring scale for each rubric item:
+- 0 = missing, very weak, or clearly inappropriate
+- 1 = partly present, but incomplete or weak
+- 2 = clear, appropriate, and sufficiently rigorous
+
+Rubric:
+
+1. objective_clarity
+Check whether the goal of the experiment is clear.
+Look for whether the proposal clearly states if it is trying to compare conditions, screen factors, test a hypothesis, or find an optimum.
+
+2. factor_response_levels
+Check whether the experiment structure is clear.
+Look for clearly stated input factors, their levels or ranges, and the output responses or measurements.
+
+3. design_choice_appropriateness
+Check whether the proposed design matches the stated goal.
+For example, if the goal is screening, the design should reflect screening logic.
+If the goal is optimization, the design should show optimization or response-surface-type reasoning.
+
+4. interaction_curvature_awareness
+Check whether the proposal shows awareness that factors may interact.
+If optimization is claimed, check whether the proposal considers curvature, center points, staged refinement, or follow-up design.
+
+5. resource_aware_design
+Check whether the proposal uses runs and resources efficiently.
+Look for whether the design is too large, too vague, or wasteful when a smaller but useful design could be used.
+
+6. execution_feasibility
+Check whether the experiment can actually be done using the provided setup.
+Only count equipment, materials, and capabilities that are explicitly available in the BOM/setup.
+Penalize the proposal if it requires missing tools, unrealistic capabilities, or forbidden items.
+
+7. documentation_rigor
+Check whether the proposal includes enough detail to support recording, tracking, and reviewing the experiment.
+Look for raw data collection, key outputs, or useful documentation of the process.
+
+8. blocking_awareness
+Check whether the proposal considers known nuisance variation.
+Look for awareness of possible variation from machine condition, operator, day, batch, or other known sources.
+
+9. iterative_experimentation
+Check whether the proposal allows step-by-step learning.
+Look for follow-up experiments, refinement, staged testing, or a plan that does not assume one single experiment will answer everything.
+
+10. bom_compliance
+Check whether the proposal stays within the provided BOM and constraints.
+Look for:
+- only using listed equipment and materials
+- not depending on forbidden items
+- not assuming hidden capabilities
+- making claims that are actually supported by the listed setup
+
+11. claim_discipline
+Check whether the proposal avoids overclaiming.
+Penalize vague claims of novelty, optimization, mechanism discovery, or feasibility if the proposal does not provide enough support.
+
+Major failure tags to use when relevant:
+- unclear_objective
+- missing_factor_response_structure
+- poor_design_match
+- no_interaction_awareness
+- weak_resource_logic
+- infeasible_execution
+- weak_documentation
+- no_blocking_awareness
+- no_iterative_plan
+- bom_violation
+- forbidden_item_dependency
+- unsupported_claims
+
+Hard-fail rules:
+Set hard_fail = true if one or more of the following is true:
+- The objective is unclear.
+- Factors and responses are not clearly specified.
+- The design does not match the stated goal.
+- The experiment is not feasible under the provided BOM/setup.
+- The proposal depends on forbidden items or missing capabilities.
+- The proposal is only a loose parameter sweep with no meaningful design logic.
+
+Evaluation instructions:
+- Be strict.
+- Do not reward proposals just because they sound plausible.
+- Judge only from the provided setup, constraints, and proposal text.
+- Do not assume missing information.
+- If an important part is not stated, treat it as missing.
+- After scoring, explain the reason for each score briefly.
+- Also provide an overall summary explaining the main strengths and weaknesses.
+
+Return JSON only.
+Use exactly this schema:
+
+{
+  "hard_fail": false,
+  "hard_fail_reasons": [],
+  "scores": {
+    "objective_clarity": {"score": 0, "reason": ""},
+    "factor_response_levels": {"score": 0, "reason": ""},
+    "design_choice_appropriateness": {"score": 0, "reason": ""},
+    "interaction_curvature_awareness": {"score": 0, "reason": ""},
+    "resource_aware_design": {"score": 0, "reason": ""},
+    "execution_feasibility": {"score": 0, "reason": ""},
+    "documentation_rigor": {"score": 0, "reason": ""},
+    "blocking_awareness": {"score": 0, "reason": ""},
+    "iterative_experimentation": {"score": 0, "reason": ""},
+    "bom_compliance": {"score": 0, "reason": ""},
+    "claim_discipline": {"score": 0, "reason": ""}
+  },
+  "failure_tags": [],
+  "total_score": 0,
+  "overall_verdict": "",
+  "overall_reasoning": {
+    "strengths": [],
+    "weaknesses": [],
+    "main_concerns": []
+  },
+  "summary": ""
+}
+
+Verdict rules:
+- If hard_fail is true, overall_verdict must be "fail".
+- Otherwise:
+  - 0 to 8 = fail
+  - 9 to 13 = plausible_idea_only
+  - 14 to 18 = weak_proposal
+  - 19 to 22 = usable_with_revisions
+  - 23 to 26 = strong_proposal
+  - 27 to 30 = rigorous
+
+
+Evaluate the following experiment proposal.
+
+Available BOM:
+{
+  "material_family": "tool steel alloy",
+  "process_family": "WAAM",
+  "materials": [
+    "Mild steel plate",
+    "Ti-6Al-4V wire",
+    "argon flooding",
+    "carbide powder"
+  ],
+  "equipment": [
+    "WAAM system",
+    "CNC table",
+    "Acoustic emission sensors",
+    "SEM",
+    "XCT",
+    "microhardness tester",
+    "tensile testing machine"
+  ],
+  "forbidden_items": [
+    "XRD",
+    "EBSD",
+    "tensile test specimens smaller than standard size"
+  ],
+  "goal": "Propose one feasible WAAM experiment."
+}
+
+Forbidden items:
+[
+  "XRD",
+  "EBSD",
+  "tensile test specimens smaller than standard size"
+]
+
+Experiment proposal:
+Shortlisted paper cards:
+- Candidate Experiment:  
+  Investigate the effect of carbide powder addition on the microstructure and mechanical properties of Ti-6Al-4V deposits produced via WAAM on mild steel substrates.  
+
+- Why This Is Feasible With Current BOM:  
+  The BOM supports WAAM deposition, SEM/XCT for microstructure analysis, microhardness testing, and tensile testing. Carbide powder is available as a material, and argon flooding can be used to control shielding gas. The CNC table enables precise substrate positioning.  
+
+- Borrowed Literature Precedents:  
+  - Use of Ti-6Al-4V wire in WAAM for aerospace applications (implied by material availability).  
+  - Carbide powder as a filler material to refine microstructure in additive manufacturing (common in literature).  
+  - Post-deposition mechanical testing via tensile machines and hardness testers.  
+
+- New Adaptation / Novel Twist:  
+  Combining carbide powder with Ti-6Al-4V wire in WAAM to study its impact on intermetallic phase formation and porosity reduction, which is not explicitly documented in the provided literature cards.  
+
+- Needed Equipment:  
+  WAAM system, CNC table, SEM, XCT, microhardness tester, tensile testing machine, acoustic emission sensors.  
+
+- Needed Materials / Consumables:  
+  Ti-6Al-4V wire, carbide powder, mild steel plate, argon flooding.  
+
+- Key Process Parameters To Sweep:  
+  - Carbide powder addition ratio (0%, 1%, 2% by weight).  
+  - Welding voltage (25–40 V).  
+  - Travel speed (100–300 mm/s). 
+...
+- Source Papers Used:  
+  - "WAAM of Ti-6Al-4V for aerospace components" (implied by material availability).  
+  - "Carbide-enhanced additive manufacturing: Microstructure and properties" (implied by material synthesis).  
+  - "Mechanical behavior of WAAM-deposited alloys" (implied by testing protocols).
+
+Return JSON only.
