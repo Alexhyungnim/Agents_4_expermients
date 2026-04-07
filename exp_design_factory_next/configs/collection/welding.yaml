@@ -1,0 +1,20 @@
+project_name: exp_design_factory
+
+collection:
+  domain: welding
+  journals:
+    - Welding in the World
+    - Science and Technology of Welding and Joining
+    - Journal of Manufacturing Processes
+  years:
+    start: 2020
+    end: 2026
+  keywords:
+    - "welding"
+    - "GMAW"
+    - "process parameters"
+    - "microstructure"
+  paper_type:
+    - experimental
+    - research_article
+  max_papers: 500

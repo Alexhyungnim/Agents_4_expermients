@@ -1,0 +1,6 @@
+generator:
+  provider: placeholder
+  model_name: strong_generator_A
+  n_candidates_per_task: 4
+  temperature: 0.8
+  max_tokens: 2200

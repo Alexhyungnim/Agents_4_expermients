@@ -1,0 +1,21 @@
+project_name: exp_design_factory
+
+collection:
+  domain: battery
+  journals:
+    - Journal of Power Sources
+    - Journal of The Electrochemical Society
+    - Energy Storage Materials
+    - Journal of Energy Chemistry
+  years:
+    start: 2020
+    end: 2026
+  keywords:
+    - "battery"
+    - "electrode"
+    - "porosity"
+    - "electrochemistry"
+  paper_type:
+    - experimental
+    - research_article
+  max_papers: 500
