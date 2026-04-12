@@ -4,10 +4,11 @@ import argparse
 from pathlib import Path
 
 from common import (
+    compute_compatibility_total_score_0to2,
     compute_detailed_verdict,
     compute_overall_verdict,
+    compute_raw_total_score_1to5,
     compute_storage_bucket,
-    compute_total_score,
     default_judged_out_path,
     dump_jsonl,
     extract_json_payload,
@@ -114,9 +115,18 @@ def main() -> None:
                 task=task,
             )
 
-            total_score = compute_total_score(normalized["rubric"])
-            detailed_verdict = compute_detailed_verdict(total_score, normalized["hard_fail"])
-            overall_verdict = compute_overall_verdict(total_score, normalized["hard_fail"])
+            raw_total_score_1to5 = compute_raw_total_score_1to5(normalized["rubric"])
+            compatibility_total_score_0to2 = compute_compatibility_total_score_0to2(
+                normalized["rubric_compatibility"]
+            )
+            detailed_verdict = compute_detailed_verdict(
+                compatibility_total_score_0to2,
+                normalized["hard_fail"],
+            )
+            overall_verdict = compute_overall_verdict(
+                compatibility_total_score_0to2,
+                normalized["hard_fail"],
+            )
             storage_bucket = compute_storage_bucket(candidate["candidate_source"], overall_verdict)
 
             row: dict[str, object] = {
@@ -126,11 +136,14 @@ def main() -> None:
                 "judge_model": str(manifest_row.get("judge_model", "manual_gpt_web_judge")),
                 "judge_contract_version": "judge_v0",
                 "rubric": normalized["rubric"],
+                "rubric_compatibility": normalized["rubric_compatibility"],
                 "rule_checks": normalized["rule_checks"],
                 "hard_fail": normalized["hard_fail"],
                 "hard_fail_reasons": normalized["hard_fail_reasons"],
                 "failure_tags": normalized["failure_tags"],
-                "total_score": total_score,
+                "raw_total_score_1to5": raw_total_score_1to5,
+                "compatibility_total_score_0to2": compatibility_total_score_0to2,
+                "total_score": compatibility_total_score_0to2,
                 "detailed_verdict": detailed_verdict,
                 "overall_verdict": overall_verdict,
                 "storage_bucket": storage_bucket,

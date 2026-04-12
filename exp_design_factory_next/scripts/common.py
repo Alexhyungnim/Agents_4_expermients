@@ -469,7 +469,7 @@ def build_judge_prompt(task: dict[str, Any], candidate: dict[str, Any]) -> str:
 
     rubric_schema_lines = []
     for key in RUBRIC_DIMENSIONS_V0:
-        rubric_schema_lines.append(f'    "{key}": {{"score": 0, "reason": ""}}')
+        rubric_schema_lines.append(f'    "{key}": {{"score": 1, "reason": ""}}')
     rubric_schema = ",\n".join(rubric_schema_lines)
 
     return f"""You are a strict evaluator for engineering experiment proposals.
@@ -502,6 +502,13 @@ Rule checks:
 - missing_controls
 - empty_replicates
 - evidence_mismatch
+
+Use a 1 to 5 scale for each rubric item:
+- 1 or 2 = weak / missing / not acceptable
+- 3 = partial / mixed
+- 4 or 5 = strong / clearly present
+
+The importer will automatically derive the compatibility 0 to 2 scale used by the current accept/reject pipeline.
 
 Hard-fail if one or more of these are true:
 - the objective is unclear
@@ -550,8 +557,8 @@ def _normalize_rubric_entry(value: Any, *, key: str) -> dict[str, Any]:
     score = value["score"]
     if isinstance(score, str) and score.strip().isdigit():
         score = int(score.strip())
-    if not isinstance(score, int) or score not in {0, 1, 2}:
-        raise ValueError(f"rubric[{key}].score must be 0, 1, or 2")
+    if not isinstance(score, int) or score not in {1, 2, 3, 4, 5}:
+        raise ValueError(f"rubric[{key}].score must be 1, 2, 3, 4, or 5")
     reason = str(value.get("reason", "")).strip()
     return {"score": score, "reason": reason}
 
@@ -569,6 +576,27 @@ def normalize_rubric_v0(raw_payload: dict[str, Any]) -> dict[str, Any]:
     for key in RUBRIC_DIMENSIONS_V0:
         out[key] = _normalize_rubric_entry(rubric[key], key=key)
     return out
+
+
+def map_raw_rubric_score_1to5_to_compatibility(score: int) -> int:
+    if score in {1, 2}:
+        return 0
+    if score == 3:
+        return 1
+    if score in {4, 5}:
+        return 2
+    raise ValueError(f"Unsupported raw rubric score: {score}")
+
+
+def derive_compatibility_rubric(raw_rubric: dict[str, Any]) -> dict[str, Any]:
+    compatibility_rubric: dict[str, Any] = {}
+    for key in RUBRIC_DIMENSIONS_V0:
+        entry = raw_rubric[key]
+        compatibility_rubric[key] = {
+            "score": map_raw_rubric_score_1to5_to_compatibility(int(entry["score"])),
+            "reason": str(entry.get("reason", "")).strip(),
+        }
+    return compatibility_rubric
 
 
 def compute_rule_checks(candidate: dict[str, Any], task: dict[str, Any]) -> dict[str, bool]:
@@ -668,7 +696,7 @@ def _merge_unique_strings(values: list[str]) -> list[str]:
 
 
 def derive_hard_fail(
-    rubric: dict[str, Any],
+    rubric_compatibility: dict[str, Any],
     rule_checks: dict[str, bool],
     *,
     hard_fail: Any = None,
@@ -676,15 +704,15 @@ def derive_hard_fail(
 ) -> tuple[bool, list[str]]:
     reasons = list(hard_fail_reasons or [])
 
-    if rubric["objective_clarity"]["score"] == 0:
+    if rubric_compatibility["objective_clarity"]["score"] == 0:
         reasons.append("unclear_objective")
-    if rubric["factor_response_levels"]["score"] == 0:
+    if rubric_compatibility["factor_response_levels"]["score"] == 0:
         reasons.append("missing_factor_response_structure")
-    if rubric["design_choice_appropriateness"]["score"] == 0:
+    if rubric_compatibility["design_choice_appropriateness"]["score"] == 0:
         reasons.append("poor_design_match")
-    if rubric["execution_feasibility"]["score"] == 0:
+    if rubric_compatibility["execution_feasibility"]["score"] == 0:
         reasons.append("infeasible_execution")
-    if rubric["bom_compliance"]["score"] == 0:
+    if rubric_compatibility["bom_compliance"]["score"] == 0:
         reasons.append("bom_violation")
     if rule_checks["unsupported_equipment"]:
         reasons.append("infeasible_execution")
@@ -698,6 +726,14 @@ def derive_hard_fail(
 
 def compute_total_score(rubric: dict[str, Any]) -> int:
     return sum(int(rubric[key]["score"]) for key in RUBRIC_DIMENSIONS_V0)
+
+
+def compute_raw_total_score_1to5(rubric: dict[str, Any]) -> int:
+    return compute_total_score(rubric)
+
+
+def compute_compatibility_total_score_0to2(rubric_compatibility: dict[str, Any]) -> int:
+    return compute_total_score(rubric_compatibility)
 
 
 def compute_detailed_verdict(total_score: int, hard_fail: bool) -> str:
@@ -736,10 +772,11 @@ def normalize_manual_judge_payload(
         raise ValueError("judge payload must be a JSON object")
 
     rubric = normalize_rubric_v0(payload)
+    rubric_compatibility = derive_compatibility_rubric(rubric)
     rule_checks = normalize_rule_checks(payload.get("rule_checks"), candidate=candidate, task=task)
     hard_fail_reasons, failure_tags, overall_reasoning, summary = normalize_reasoning_summary(payload)
     hard_fail, hard_fail_reasons = derive_hard_fail(
-        rubric,
+        rubric_compatibility,
         rule_checks,
         hard_fail=payload.get("hard_fail"),
         hard_fail_reasons=hard_fail_reasons,
@@ -747,6 +784,7 @@ def normalize_manual_judge_payload(
 
     return {
         "rubric": rubric,
+        "rubric_compatibility": rubric_compatibility,
         "rule_checks": rule_checks,
         "hard_fail": hard_fail,
         "hard_fail_reasons": hard_fail_reasons,

@@ -70,7 +70,8 @@ Fallback behavior in the manual importers:
 - `05b_import_manual_candidates.py --allow-plain-final-proposal` wraps a bare `final_proposal` object with a fallback `reasoning_trace`.
 - If `reasoning_trace` is a plain string, the candidate importer wraps it as `{"note": ...}`.
 - `07b_import_manual_judgments.py` accepts `rubric` or legacy `scores` in raw judge output.
-- `07b_import_manual_judgments.py` computes canonical `total_score`, `detailed_verdict`, `overall_verdict`, and `storage_bucket` during import.
+- Manual judgments now preserve the raw 1..5 rubric under `rubric`, derive `rubric_compatibility` on 0..2 automatically, and compute both `raw_total_score_1to5` and `compatibility_total_score_0to2`.
+- `07b_import_manual_judgments.py` continues to compute `overall_verdict` and `storage_bucket` from the compatibility score plus hard-fail logic, and keeps `total_score` as the compatibility-score alias for downstream pipeline compatibility.
 - If `rule_checks` are missing in raw judge output, the importer fills deterministic fallbacks from the candidate and task records.
 - If `hard_fail_reasons` or `failure_tags` are missing in raw judge output, the importer defaults them to empty lists.
 - If a per-dimension rubric `reason` is missing, the importer fills an empty string.
