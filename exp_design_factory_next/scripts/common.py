@@ -74,6 +74,11 @@ def dump_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -146,6 +151,49 @@ def build_candidate_id(task_id: str, candidate_rank: int, candidate_source: str)
     if candidate_source == "weak_baseline":
         return f"weak_{task_id}_{candidate_rank:02d}"
     return f"cand_{task_id}_{candidate_rank:02d}"
+
+
+def build_candidate_id_with_label(
+    task_id: str,
+    origin_label: str,
+    candidate_rank: int,
+    *,
+    candidate_source: str,
+) -> str:
+    prefix = "weak" if candidate_source == "weak_baseline" else "cand"
+    return f"{prefix}_{task_id}_{slugify(origin_label)}_{candidate_rank:02d}"
+
+
+def upsert_jsonl_rows(path: Path, rows: list[dict[str, Any]], *, key_field: str) -> None:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for existing_row in load_jsonl(path):
+        key = str(existing_row[key_field])
+        merged[key] = existing_row
+        order.append(key)
+
+    for row in rows:
+        key = str(row[key_field])
+        if key not in merged:
+            order.append(key)
+        merged[key] = row
+
+    dump_jsonl(path, [merged[key] for key in order])
+
+
+def load_merged_jsonl_rows(paths: list[Path], *, key_field: str) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for path in paths:
+        for row in load_jsonl(path):
+            key = str(row[key_field])
+            if key not in merged:
+                order.append(key)
+            merged[key] = row
+
+    return [merged[key] for key in order]
 
 
 def normalize_task_record(task: dict[str, Any]) -> dict[str, Any]:
@@ -311,6 +359,118 @@ def sanitize_manual_raw_text(raw_text: str) -> str:
     return text.replace("\u2028", "\n").replace("\u2029", "\n")
 
 
+def parse_labeled_sections(text: str, labels: list[str]) -> dict[str, str]:
+    pattern = re.compile(
+        r"^(%s):\s*(.*)$" % "|".join(re.escape(label) for label in labels),
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return {}
+
+    sections: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        label = match.group(1)
+        inline_value = match.group(2).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        content = inline_value
+        if block:
+            content = f"{inline_value}\n{block}".strip() if inline_value else block
+        sections[label] = content.strip()
+    return sections
+
+
+def text_block_to_items(text: str) -> list[str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+
+    bullet_lines = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            bullet_lines.append(line[2:].strip())
+        elif line.startswith("* "):
+            bullet_lines.append(line[2:].strip())
+
+    if bullet_lines:
+        return [x for x in bullet_lines if x]
+
+    parts = re.split(r"[\n;,]+", raw)
+    items = [part.strip(" -") for part in parts if part.strip(" -")]
+    return items
+
+
+def maybe_read_json(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def resolve_local_hf_model_path(model_name: str) -> str:
+    direct_path = Path(model_name).expanduser()
+    if direct_path.exists():
+        return str(direct_path)
+
+    repo_cache_dir = (
+        Path.home()
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / f"models--{model_name.replace('/', '--')}"
+    )
+    if not repo_cache_dir.exists():
+        return model_name
+
+    refs_main = repo_cache_dir / "refs" / "main"
+    if refs_main.exists():
+        revision = refs_main.read_text(encoding="utf-8").strip()
+        if revision:
+            snapshot_dir = repo_cache_dir / "snapshots" / revision
+            if snapshot_dir.exists():
+                return str(snapshot_dir)
+
+    snapshot_roots = sorted(
+        path for path in (repo_cache_dir / "snapshots").iterdir()
+        if path.is_dir()
+    ) if (repo_cache_dir / "snapshots").exists() else []
+    for snapshot_dir in snapshot_roots:
+        if (snapshot_dir / "config.json").exists():
+            return str(snapshot_dir)
+
+    return model_name
+
+
+def resolve_task_for_candidate_source(
+    tasks: dict[str, dict[str, Any]],
+    *,
+    task_id: str | None = None,
+    goal_text: str | None = None,
+) -> dict[str, Any]:
+    if task_id is not None:
+        if task_id not in tasks:
+            raise ValueError(f"Requested task_id not found: {task_id}")
+        return tasks[task_id]
+
+    if len(tasks) == 1:
+        return next(iter(tasks.values()))
+
+    if goal_text:
+        goal_text_norm = str(goal_text).strip().lower()
+        matches = [
+            task for task in tasks.values()
+            if str(task.get("goal", "")).strip().lower() == goal_text_norm
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+    raise ValueError(
+        "Could not resolve a unique task. Pass --task-id explicitly or ensure tasks.jsonl has one row."
+    )
+
+
 def _extract_balanced_region(text: str, start_idx: int) -> str | None:
     opening = text[start_idx]
     if opening not in "{[":
@@ -463,6 +623,78 @@ Rules:
 """.strip()
 
 
+class LocalTransformersLLM:
+    def __init__(self, model_name: str, *, trust_remote_code: bool = True):
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "Local LLM generation requires transformers and torch to be installed."
+            ) from exc
+
+        self._torch = torch
+        self.model_name = model_name
+        resolved_model_path = resolve_local_hf_model_path(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            resolved_model_path,
+            local_files_only=True,
+            trust_remote_code=trust_remote_code,
+        )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            resolved_model_path,
+            local_files_only=True,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=trust_remote_code,
+        )
+
+        if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+    def _build_prompt_text(self, prompt: str) -> str:
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                return self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except Exception:
+                return prompt
+        return prompt
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 900,
+        temperature: float = 0.2,
+    ) -> str:
+        prompt_text = self._build_prompt_text(prompt)
+        inputs = self.tokenizer(prompt_text, return_tensors="pt")
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        do_sample = temperature > 0
+        generate_kwargs: dict[str, Any] = {
+            **inputs,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "repetition_penalty": 1.05,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        if do_sample:
+            generate_kwargs["temperature"] = temperature
+            generate_kwargs["top_p"] = 0.95
+
+        with self._torch.no_grad():
+            outputs = self.model.generate(**generate_kwargs)
+
+        gen_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+        return self.tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
+
+
 def build_judge_prompt(task: dict[str, Any], candidate: dict[str, Any]) -> str:
     task_json = pretty_json(task)
     candidate_json = pretty_json(candidate["final_proposal"])
@@ -543,6 +775,365 @@ Use exactly this schema:
   "summary": ""
 }}
 """.strip()
+
+
+RAG1_SECTION_LABELS = [
+    "Candidate Experiment",
+    "Why This Is Feasible With Current BOM",
+    "Borrowed Literature Precedents",
+    "New Adaptation / Novel Twist",
+    "Needed Equipment",
+    "Needed Materials / Consumables",
+    "Key Process Parameters To Sweep",
+    "Measurements / Outputs",
+    "Main Risk / Failure Mode",
+    "Missing Capability / Assumption",
+    "Source Papers Used",
+]
+
+LOCAL_CANDIDATE_OUTLINE_LABELS = [
+    "Goal",
+    "Hypothesis",
+    "Resources Used",
+    "Independent Variables",
+    "Dependent Variables",
+    "Controls",
+    "Conditions",
+    "Replicates",
+    "Procedure Outline",
+    "Measurement Plan",
+    "Analysis Plan",
+    "Feasibility Checks",
+    "Evidence Used",
+]
+
+
+def _parse_first_int(text: str) -> int | None:
+    match = re.search(r"\d+", str(text or ""))
+    if not match:
+        return None
+    return int(match.group(0))
+
+
+def _infer_task_variables(goal: str) -> tuple[list[str], list[str]]:
+    text = str(goal or "").strip()
+    if not text:
+        return [], []
+
+    patterns = [
+        re.compile(r"study how\s+(?P<iv>.+?)\s+affects\s+(?P<dv>.+?)(?:\s+in\s+|\s+for\s+|$)", re.IGNORECASE),
+        re.compile(r"how\s+(?P<iv>.+?)\s+affects\s+(?P<dv>.+?)(?:\s+in\s+|\s+for\s+|$)", re.IGNORECASE),
+        re.compile(r"effect of\s+(?P<iv>.+?)\s+on\s+(?P<dv>.+?)(?:\s+in\s+|\s+for\s+|$)", re.IGNORECASE),
+    ]
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            return [match.group("iv").strip(" .")], [match.group("dv").strip(" .")]
+    return [], []
+
+
+def _match_allowed_items(items: list[str], allowed_items: list[str]) -> list[str]:
+    allowed_map = {item.strip().lower(): item for item in allowed_items if item.strip()}
+    matched: list[str] = []
+    for item in items:
+        normalized = item.strip().lower()
+        if normalized in allowed_map:
+            matched.append(allowed_map[normalized])
+    return _merge_unique_strings(matched)
+
+
+def build_local_candidate_outline_prompt(
+    task: dict[str, Any],
+    *,
+    candidate_rank: int,
+    n_candidates: int,
+) -> str:
+    variant_note = (
+        "Make the safest, most executable first-pass experiment."
+        if candidate_rank == 1
+        else "Make a weaker contrast variant that is broader, less controlled, or less complete."
+    )
+    task_json = pretty_json(task)
+    return f"""You are drafting one experiment proposal outline for local post-processing.
+
+Candidate variant target: {candidate_rank} of {n_candidates}
+{variant_note}
+
+Task record:
+{task_json}
+
+Return only the labeled outline below. Keep each field short.
+Use bullet items for list fields when helpful.
+Do not use markdown fences.
+
+Goal:
+Hypothesis:
+Resources Used:
+Independent Variables:
+Dependent Variables:
+Controls:
+Conditions:
+Replicates:
+Procedure Outline:
+Measurement Plan:
+Analysis Plan:
+Feasibility Checks:
+Evidence Used:
+""".strip()
+
+
+def candidate_payload_from_outline_text(
+    raw_text: str,
+    *,
+    task: dict[str, Any],
+    candidate_rank: int,
+) -> dict[str, Any]:
+    sections = parse_labeled_sections(raw_text, LOCAL_CANDIDATE_OUTLINE_LABELS)
+    if not sections:
+        raise ValueError("Could not parse labeled outline sections from local candidate output")
+
+    available_resources = task.get("available_resources", {})
+    allowed_resources = normalize_string_list(available_resources.get("equipment", [])) + normalize_string_list(
+        available_resources.get("materials", [])
+    )
+    default_ivs, default_dvs = _infer_task_variables(str(task.get("goal", "")))
+
+    resources_used = _match_allowed_items(
+        text_block_to_items(sections.get("Resources Used", "")),
+        allowed_resources,
+    )
+    if candidate_rank == 1 and not resources_used:
+        resources_used = _merge_unique_strings(allowed_resources[:4])
+
+    independent_variables = text_block_to_items(sections.get("Independent Variables", "")) or default_ivs
+    dependent_variables = text_block_to_items(sections.get("Dependent Variables", "")) or default_dvs
+
+    controls = [
+        item for item in text_block_to_items(sections.get("Controls", ""))
+        if item.strip().lower() not in {"none", "n/a", "na", "no control", "no controls"}
+    ]
+    if candidate_rank == 1 and not controls:
+        controls = [
+            "Keep all non-target process settings fixed.",
+            "Use the same powder lot and shielding gas setup.",
+        ]
+
+    conditions = text_block_to_items(sections.get("Conditions", ""))
+    if len(conditions) == 1:
+        condition_text = conditions[0]
+        split_source = condition_text.split(":", 1)[1].strip() if ":" in condition_text else condition_text
+        split_conditions = [part.strip(" .") for part in split_source.split(" and ") if part.strip(" .")]
+        if len(split_conditions) >= 2:
+            conditions = split_conditions
+    if candidate_rank == 1 and not conditions and independent_variables:
+        iv = independent_variables[0]
+        conditions = [
+            f"low {iv}",
+            f"medium {iv}",
+            f"high {iv}",
+        ]
+
+    replicates = _parse_first_int(sections.get("Replicates", ""))
+    if replicates is None:
+        replicates = 3 if candidate_rank == 1 else None
+
+    procedure_outline = text_block_to_items(sections.get("Procedure Outline", ""))
+    if candidate_rank == 1 and not procedure_outline:
+        procedure_outline = [
+            "Prepare samples using the listed process setup.",
+            "Run the planned conditions in the stable operating window.",
+            "Section and inspect samples with the listed characterization tools.",
+        ]
+
+    measurement_plan = text_block_to_items(sections.get("Measurement Plan", ""))
+    if candidate_rank == 1 and not measurement_plan:
+        measurement_plan = dependent_variables[:]
+
+    analysis_plan = text_block_to_items(sections.get("Analysis Plan", ""))
+    if candidate_rank == 1 and not analysis_plan:
+        analysis_plan = ["Compare the measured response across conditions."]
+
+    feasibility_checks = text_block_to_items(sections.get("Feasibility Checks", ""))
+    if candidate_rank == 1 and not feasibility_checks:
+        feasibility_checks = [
+            "Uses only listed equipment and materials.",
+            "Keeps the first experiment narrow and executable.",
+        ]
+
+    known_evidence = [str(x) for x in task.get("evidence_chunk_ids", [])]
+    requested_evidence = [item for item in text_block_to_items(sections.get("Evidence Used", "")) if item in known_evidence]
+    evidence_used = requested_evidence or (known_evidence[:1] if candidate_rank == 1 else [])
+
+    goal = str(sections.get("Goal", "")).strip() or str(task.get("goal", "")).strip()
+    hypothesis = str(sections.get("Hypothesis", "")).strip()
+    if not hypothesis:
+        if independent_variables and dependent_variables:
+            hypothesis = f"Changing {independent_variables[0]} will affect {dependent_variables[0]}."
+        else:
+            hypothesis = f"A narrower first-pass experiment can test the task goal: {goal}"
+
+    return normalize_candidate_payload(
+        {
+            "reasoning_trace": {
+                "resource_check": "; ".join(resources_used) or "Resource list was sparse in the local outline.",
+                "variable_mapping": "; ".join(independent_variables + dependent_variables) or goal,
+                "control_strategy": "; ".join(controls) or "Controls were left under-specified in the local outline.",
+                "measurement_strategy": "; ".join(measurement_plan) or "Measurement plan was sparse in the local outline.",
+                "risk_check": "; ".join(feasibility_checks) or "Feasibility and risk notes were sparse in the local outline.",
+            },
+            "final_proposal": {
+                "goal": goal,
+                "hypothesis": hypothesis,
+                "resources_used": resources_used,
+                "independent_variables": independent_variables,
+                "dependent_variables": dependent_variables,
+                "controls": controls,
+                "design": {
+                    "conditions": conditions,
+                    "replicates": replicates,
+                    "procedure_outline": procedure_outline,
+                },
+                "measurement_plan": measurement_plan,
+                "analysis_plan": analysis_plan,
+                "feasibility_checks": feasibility_checks,
+                "evidence_used": evidence_used,
+            },
+        },
+        allow_plain_final_proposal=False,
+    )
+
+
+def convert_main_rag_outputs_to_candidate_record(
+    *,
+    task: dict[str, Any],
+    rag1_payload: dict[str, Any],
+    rag2_payload: dict[str, Any] | None,
+    candidate_id: str,
+    candidate_rank: int = 1,
+    generator_model: str = "main_rag_pipeline",
+    candidate_source: str = "strong",
+) -> dict[str, Any]:
+    available_bom = rag1_payload.get("available_bom", {})
+    rag1_proposal = str(rag1_payload.get("rag1_proposal", "")).strip()
+    if not rag1_proposal:
+        raise ValueError("RAG1 payload is missing rag1_proposal")
+
+    sections = parse_labeled_sections(rag1_proposal, RAG1_SECTION_LABELS)
+    source_papers = text_block_to_items(sections.get("Source Papers Used", ""))
+
+    rag2_bom_check = rag2_payload.get("bom_check", {}) if isinstance(rag2_payload, dict) else {}
+    rag2_missing = rag2_payload.get("missing_or_limited_items", []) if isinstance(rag2_payload, dict) else []
+    rag2_narrowing = rag2_payload.get("narrowing_advice", []) if isinstance(rag2_payload, dict) else []
+    rag2_message = str(rag2_payload.get("message_to_rag1", "")).strip() if isinstance(rag2_payload, dict) else ""
+
+    reference_ids = []
+    for item in rag2_missing + rag2_narrowing:
+        for support in item.get("literature_support", []) or []:
+            ref_id = str(support.get("reference_id", "")).strip()
+            if ref_id:
+                reference_ids.append(ref_id)
+
+    task_evidence_ids = _merge_unique_strings(
+        [str(x).strip() for x in task.get("evidence_chunk_ids", []) if str(x).strip()]
+    )
+    imported_evidence_hints = _merge_unique_strings(source_papers + reference_ids)
+
+    resources_used = _merge_unique_strings(
+        text_block_to_items(sections.get("Needed Equipment", ""))
+        + text_block_to_items(sections.get("Needed Materials / Consumables", ""))
+    )
+    independent_variables = _merge_unique_strings(
+        text_block_to_items(sections.get("Key Process Parameters To Sweep", ""))
+    )
+    dependent_variables = _merge_unique_strings(
+        text_block_to_items(sections.get("Measurements / Outputs", ""))
+    )
+    feasibility_checks = _merge_unique_strings(
+        [
+            sections.get("Why This Is Feasible With Current BOM", ""),
+            sections.get("Main Risk / Failure Mode", ""),
+            sections.get("Missing Capability / Assumption", ""),
+            str(rag2_bom_check.get("reason", "")).strip(),
+            rag2_message,
+        ]
+        + [str(item.get("why_it_matters", "")).strip() for item in rag2_missing]
+    )
+    procedure_outline = _merge_unique_strings(
+        [
+            sections.get("Candidate Experiment", ""),
+            sections.get("Borrowed Literature Precedents", ""),
+            sections.get("New Adaptation / Novel Twist", ""),
+        ]
+    )
+
+    fallback_analysis_plan = []
+    if dependent_variables:
+        fallback_analysis_plan.append("Compare measured outputs across proposed conditions.")
+    fallback_analysis_plan.extend(
+        str(item.get("advice", "")).strip() for item in rag2_narrowing
+    )
+
+    payload = normalize_candidate_payload(
+        {
+            "reasoning_trace": {
+                "resource_check": (
+                    str(rag2_bom_check.get("reason", "")).strip()
+                    or sections.get("Why This Is Feasible With Current BOM", "")
+                    or "Imported from main-side RAG outputs."
+                ),
+                "variable_mapping": "; ".join(independent_variables) or sections.get("Candidate Experiment", ""),
+                "control_strategy": "Imported from main-side RAG outputs; explicit controls were not structured.",
+                "measurement_strategy": "; ".join(dependent_variables) or sections.get("Measurements / Outputs", ""),
+                "risk_check": " | ".join(
+                    _merge_unique_strings(
+                        [
+                            sections.get("Main Risk / Failure Mode", ""),
+                            sections.get("Missing Capability / Assumption", ""),
+                            rag2_message,
+                        ]
+                    )
+                ),
+            },
+            "final_proposal": {
+                "goal": str(task.get("goal") or available_bom.get("goal") or sections.get("Candidate Experiment", "")).strip(),
+                "hypothesis": (
+                    sections.get("New Adaptation / Novel Twist", "")
+                    or sections.get("Candidate Experiment", "")
+                ),
+                "resources_used": resources_used,
+                "independent_variables": independent_variables,
+                "dependent_variables": dependent_variables,
+                "controls": [],
+                "design": {
+                    "conditions": [],
+                    "replicates": None,
+                    "procedure_outline": procedure_outline,
+                },
+                "measurement_plan": dependent_variables,
+                "analysis_plan": _merge_unique_strings(fallback_analysis_plan) or ["Compare outputs across tested conditions."],
+                "feasibility_checks": feasibility_checks,
+                "evidence_used": task_evidence_ids or imported_evidence_hints,
+            },
+        },
+        allow_plain_final_proposal=False,
+    )
+
+    raw_text_parts = [
+        pretty_json(rag1_payload),
+    ]
+    if rag2_payload is not None:
+        raw_text_parts.append(pretty_json(rag2_payload))
+
+    return {
+        "candidate_id": candidate_id,
+        "task_id": str(task["task_id"]),
+        "candidate_source": normalize_candidate_source(candidate_source, default="strong"),
+        "generator_model": generator_model,
+        "candidate_rank": int(candidate_rank),
+        "reasoning_trace": payload["reasoning_trace"],
+        "final_proposal": payload["final_proposal"],
+        "raw_text": "\n\n".join(raw_text_parts),
+    }
 
 
 def looks_like_judge_payload(payload: Any) -> bool:
@@ -634,6 +1225,24 @@ def compute_rule_checks(candidate: dict[str, Any], task: dict[str, Any]) -> dict
         "empty_replicates": proposal.get("design", {}).get("replicates") in {None, 0, ""},
         "evidence_mismatch": bool(evidence_used and known_evidence and not evidence_used.issubset(known_evidence)),
     }
+
+
+def compute_rule_failure_tags(rule_checks: dict[str, bool]) -> list[str]:
+    tags: list[str] = []
+    if rule_checks.get("unsupported_equipment"):
+        tags.append("infeasible_execution")
+        tags.append("bom_violation")
+    if rule_checks.get("missing_controls"):
+        tags.append("weak_documentation")
+    if rule_checks.get("empty_replicates"):
+        tags.append("weak_resource_logic")
+    if rule_checks.get("evidence_mismatch"):
+        tags.append("evidence_mismatch")
+    return _merge_unique_strings(tags)
+
+
+def compute_rule_hard_fail(rule_checks: dict[str, bool]) -> bool:
+    return bool(rule_checks.get("unsupported_equipment") or rule_checks.get("evidence_mismatch"))
 
 
 def normalize_rule_checks(
@@ -760,6 +1369,239 @@ def compute_storage_bucket(candidate_source: str, overall_verdict: str) -> str:
     if candidate_source == "weak_baseline":
         return "weak_baseline"
     return "accepted_silver" if overall_verdict == "accept_silver" else "rejected"
+
+
+def build_rule_first_row(candidate: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    rule_checks = compute_rule_checks(candidate, task)
+    rule_failure_tags = compute_rule_failure_tags(rule_checks)
+    rule_hard_fail = compute_rule_hard_fail(rule_checks)
+    suggested_storage_bucket = (
+        "weak_baseline"
+        if candidate["candidate_source"] == "weak_baseline"
+        else ("rejected" if rule_hard_fail else "pending_local_judge")
+    )
+
+    return {
+        "candidate_id": candidate["candidate_id"],
+        "task_id": candidate["task_id"],
+        "candidate_source": candidate["candidate_source"],
+        "rule_checks": rule_checks,
+        "rule_failure_tags": rule_failure_tags,
+        "rule_hard_fail": rule_hard_fail,
+        "suggested_storage_bucket": suggested_storage_bucket,
+    }
+
+
+def build_rule_only_judged_row(
+    *,
+    candidate: dict[str, Any],
+    task: dict[str, Any],
+    rule_first_row: dict[str, Any],
+    judge_model: str,
+    judge_contract_version: str,
+) -> dict[str, Any]:
+    rubric: dict[str, Any] = {}
+    for key in RUBRIC_DIMENSIONS_V0:
+        score = 2
+        reason = "Skipped local LLM judge because the candidate hit a rule-based hard fail."
+        if key in {"execution_feasibility", "bom_compliance"} and rule_first_row["rule_checks"].get("unsupported_equipment"):
+            score = 1
+            reason = "Rule-based hard fail: unsupported equipment or forbidden resource use."
+        elif key == "factor_response_levels" and rule_first_row["rule_checks"].get("evidence_mismatch"):
+            score = 1
+            reason = "Rule-based hard fail: evidence references do not match the task evidence."
+        rubric[key] = {"score": score, "reason": reason}
+
+    rubric_compatibility = derive_compatibility_rubric(rubric)
+    hard_fail = True
+    hard_fail_reasons = _merge_unique_strings(
+        compute_rule_failure_tags(rule_first_row["rule_checks"]) + ["rule_based_hard_fail"]
+    )
+    raw_total_score_1to5 = compute_raw_total_score_1to5(rubric)
+    compatibility_total_score_0to2 = compute_compatibility_total_score_0to2(rubric_compatibility)
+    overall_verdict = compute_overall_verdict(compatibility_total_score_0to2, hard_fail)
+    storage_bucket = compute_storage_bucket(candidate["candidate_source"], overall_verdict)
+
+    return {
+        "candidate_id": candidate["candidate_id"],
+        "task_id": candidate["task_id"],
+        "candidate_source": candidate["candidate_source"],
+        "judge_model": judge_model,
+        "judge_contract_version": judge_contract_version,
+        "rubric": rubric,
+        "rubric_compatibility": rubric_compatibility,
+        "rule_checks": rule_first_row["rule_checks"],
+        "hard_fail": hard_fail,
+        "hard_fail_reasons": hard_fail_reasons,
+        "failure_tags": _merge_unique_strings(rule_first_row["rule_failure_tags"]),
+        "raw_total_score_1to5": raw_total_score_1to5,
+        "compatibility_total_score_0to2": compatibility_total_score_0to2,
+        "total_score": compatibility_total_score_0to2,
+        "detailed_verdict": compute_detailed_verdict(compatibility_total_score_0to2, hard_fail),
+        "overall_verdict": overall_verdict,
+        "storage_bucket": storage_bucket,
+        "summary": "Rejected by rule-first grading before local LLM judging.",
+        "overall_reasoning": {
+            "strengths": [],
+            "weaknesses": rule_first_row["rule_failure_tags"],
+            "main_concerns": hard_fail_reasons,
+        },
+    }
+
+
+def build_structural_fallback_judged_row(
+    *,
+    candidate: dict[str, Any],
+    task: dict[str, Any],
+    judge_model: str,
+    judge_contract_version: str,
+    summary_note: str,
+) -> dict[str, Any]:
+    proposal = candidate["final_proposal"]
+    rule_checks = compute_rule_checks(candidate, task)
+
+    n_iv = len(normalize_string_list(proposal.get("independent_variables", [])))
+    n_dv = len(normalize_string_list(proposal.get("dependent_variables", [])))
+    n_controls = len(normalize_string_list(proposal.get("controls", [])))
+    n_conditions = len(normalize_string_list(proposal.get("design", {}).get("conditions", [])))
+    replicates = proposal.get("design", {}).get("replicates")
+    n_steps = len(normalize_string_list(proposal.get("design", {}).get("procedure_outline", [])))
+    n_measurements = len(normalize_string_list(proposal.get("measurement_plan", [])))
+    n_analysis = len(normalize_string_list(proposal.get("analysis_plan", [])))
+    n_feasibility = len(normalize_string_list(proposal.get("feasibility_checks", [])))
+    n_evidence = len([str(x) for x in proposal.get("evidence_used", []) if str(x).strip()])
+    has_goal = bool(str(proposal.get("goal", "")).strip())
+    has_hypothesis = bool(str(proposal.get("hypothesis", "")).strip())
+
+    rubric = {
+        "objective_clarity": {
+            "score": 5 if has_goal and has_hypothesis else 2,
+            "reason": "Fallback structural scoring based on explicit goal and hypothesis fields.",
+        },
+        "factor_response_levels": {
+            "score": 5 if n_iv >= 1 and n_dv >= 1 and n_conditions >= 3 and replicates and replicates >= 3 else (3 if n_iv >= 1 and n_dv >= 1 else 2),
+            "reason": "Fallback structural scoring based on variables, conditions, and replicates.",
+        },
+        "design_choice_appropriateness": {
+            "score": 4 if n_conditions >= 3 and n_analysis >= 1 else (3 if n_conditions >= 2 else 2),
+            "reason": "Fallback structural scoring based on design completeness and analysis plan.",
+        },
+        "interaction_curvature_awareness": {
+            "score": 4 if n_conditions >= 3 else (3 if n_conditions >= 2 else 2),
+            "reason": "Fallback structural scoring based on the number of planned conditions.",
+        },
+        "resource_aware_design": {
+            "score": 5 if not rule_checks["unsupported_equipment"] and normalize_string_list(proposal.get("resources_used", [])) else 2,
+            "reason": "Fallback structural scoring based on listed resources and BOM fit.",
+        },
+        "execution_feasibility": {
+            "score": 5 if not rule_checks["unsupported_equipment"] and n_steps >= 2 else 2,
+            "reason": "Fallback structural scoring based on procedure detail and BOM fit.",
+        },
+        "documentation_rigor": {
+            "score": 4 if n_steps >= 2 and n_measurements >= 1 and n_analysis >= 1 else 2,
+            "reason": "Fallback structural scoring based on procedure, measurements, and analysis.",
+        },
+        "blocking_awareness": {
+            "score": 4 if n_controls >= 1 and replicates and n_feasibility >= 1 else (2 if n_feasibility >= 1 else 1),
+            "reason": "Fallback structural scoring based on controls, replicates, and feasibility notes.",
+        },
+        "iterative_experimentation": {
+            "score": 4 if n_conditions and n_conditions <= 4 and n_analysis >= 1 else 2,
+            "reason": "Fallback structural scoring based on whether the plan looks like a narrow first pass.",
+        },
+        "bom_compliance": {
+            "score": 5 if not rule_checks["unsupported_equipment"] else 1,
+            "reason": "Fallback structural scoring based on rule-based BOM compliance.",
+        },
+        "claim_discipline": {
+            "score": 4 if n_evidence >= 1 and n_feasibility >= 1 else (3 if n_evidence >= 1 or n_feasibility >= 1 else 2),
+            "reason": "Fallback structural scoring based on evidence and feasibility support.",
+        },
+    }
+
+    if rule_checks["missing_controls"]:
+        rubric["factor_response_levels"]["score"] = min(int(rubric["factor_response_levels"]["score"]), 2)
+        rubric["design_choice_appropriateness"]["score"] = min(int(rubric["design_choice_appropriateness"]["score"]), 2)
+        rubric["documentation_rigor"]["score"] = min(int(rubric["documentation_rigor"]["score"]), 2)
+        rubric["blocking_awareness"]["score"] = min(int(rubric["blocking_awareness"]["score"]), 1)
+    if rule_checks["empty_replicates"]:
+        rubric["factor_response_levels"]["score"] = min(int(rubric["factor_response_levels"]["score"]), 2)
+        rubric["interaction_curvature_awareness"]["score"] = min(int(rubric["interaction_curvature_awareness"]["score"]), 2)
+        rubric["blocking_awareness"]["score"] = min(int(rubric["blocking_awareness"]["score"]), 1)
+        rubric["iterative_experimentation"]["score"] = min(int(rubric["iterative_experimentation"]["score"]), 2)
+    if rule_checks["evidence_mismatch"]:
+        rubric["claim_discipline"]["score"] = 1
+    if int(candidate.get("candidate_rank", 1)) > 1:
+        rubric["documentation_rigor"]["score"] = min(int(rubric["documentation_rigor"]["score"]), 2)
+        rubric["blocking_awareness"]["score"] = min(int(rubric["blocking_awareness"]["score"]), 2)
+        rubric["iterative_experimentation"]["score"] = min(int(rubric["iterative_experimentation"]["score"]), 2)
+
+    rubric_compatibility = derive_compatibility_rubric(rubric)
+    hard_fail, hard_fail_reasons = derive_hard_fail(
+        rubric_compatibility,
+        rule_checks,
+        hard_fail=False,
+        hard_fail_reasons=[],
+    )
+    failure_tags = _merge_unique_strings(compute_rule_failure_tags(rule_checks) + hard_fail_reasons)
+    raw_total_score_1to5 = compute_raw_total_score_1to5(rubric)
+    compatibility_total_score_0to2 = compute_compatibility_total_score_0to2(rubric_compatibility)
+    overall_verdict = compute_overall_verdict(compatibility_total_score_0to2, hard_fail)
+    storage_bucket = compute_storage_bucket(candidate["candidate_source"], overall_verdict)
+
+    return {
+        "candidate_id": candidate["candidate_id"],
+        "task_id": candidate["task_id"],
+        "candidate_source": candidate["candidate_source"],
+        "judge_model": judge_model,
+        "judge_contract_version": judge_contract_version,
+        "rubric": rubric,
+        "rubric_compatibility": rubric_compatibility,
+        "rule_checks": rule_checks,
+        "hard_fail": hard_fail,
+        "hard_fail_reasons": hard_fail_reasons,
+        "failure_tags": failure_tags,
+        "raw_total_score_1to5": raw_total_score_1to5,
+        "compatibility_total_score_0to2": compatibility_total_score_0to2,
+        "total_score": compatibility_total_score_0to2,
+        "detailed_verdict": compute_detailed_verdict(compatibility_total_score_0to2, hard_fail),
+        "overall_verdict": overall_verdict,
+        "storage_bucket": storage_bucket,
+        "summary": summary_note,
+        "overall_reasoning": {
+            "strengths": ["Fallback structural judge used the canonical candidate fields."],
+            "weaknesses": failure_tags,
+            "main_concerns": hard_fail_reasons,
+        },
+    }
+
+
+def materialize_local_bucket_views(
+    rows: list[dict[str, Any]],
+    *,
+    out_dir: Path,
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    accepted_silver_lite = [
+        row for row in rows
+        if row.get("candidate_source") != "weak_baseline"
+        and row.get("storage_bucket") == "accepted_silver"
+    ]
+    rejected = [
+        row for row in rows
+        if row.get("candidate_source") != "weak_baseline"
+        and row.get("storage_bucket") == "rejected"
+    ]
+    weak_baseline = [
+        row for row in rows
+        if row.get("candidate_source") == "weak_baseline"
+        or row.get("storage_bucket") == "weak_baseline"
+    ]
+
+    dump_jsonl(out_dir / "accepted_silver_lite.jsonl", accepted_silver_lite)
+    dump_jsonl(out_dir / "rejected.jsonl", rejected)
+    dump_jsonl(out_dir / "weak_baseline.jsonl", weak_baseline)
 
 
 def normalize_manual_judge_payload(

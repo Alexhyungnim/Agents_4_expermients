@@ -49,6 +49,35 @@ python scripts/05a_export_candidate_prompts.py --candidate-source weak_baseline 
 python scripts/05b_import_manual_candidates.py --manifest-path data/manual/candidates/manifest.jsonl
 ```
 
+### Local-only zero-cost workflow
+This path uses:
+- current main-side `rag1/rag2` outputs as one strong-candidate source
+- a local Hugging Face model as another strong-candidate source
+- existing `weak_rag` candidates as the weak-baseline source
+- rule-first grading before local LLM judging
+- manual web judging only for a small calibration subset
+
+```bash
+python scripts/05c_import_rag_candidates.py --task-id YOUR_TASK_ID
+python scripts/05d_generate_local_candidates.py --n-candidates-per-task 2
+python scripts/06_generate_weak_rag.py
+python scripts/07c_rule_grade_candidates.py
+python scripts/07d_local_judge_candidates.py
+python scripts/07c_rule_grade_candidates.py --candidates-path data/processed/candidates/weak_rag_candidates.jsonl
+python scripts/07d_local_judge_candidates.py --candidates-path data/processed/candidates/weak_rag_candidates.jsonl
+```
+
+Notes:
+- `05c_import_rag_candidates.py` reads `../outputs/rag1_latest_output.json` and `../outputs/rag2_advice.json` by default and converts them into canonical candidate rows.
+- When imported `rag1/rag2` outputs do not carry exact FT `evidence_chunk_ids`, the importer falls back to the matched task's `evidence_chunk_ids` so rule-first grading does not treat them as a false evidence mismatch.
+- `05d_generate_local_candidates.py` appends local-model candidates into the same canonical `candidates.jsonl`.
+- `07c_rule_grade_candidates.py` tags rule-based failures before any local LLM judging.
+- `07d_local_judge_candidates.py` writes canonical judged rows and also materializes local-only bucket views under `data/processed/judged/local_only_buckets/` from the canonical strong and weak judged files together.
+- The local-only bucket view `accepted_silver_lite.jsonl` is a convenience sidecar for local-first review. Canonical judged rows still use `storage_bucket == "accepted_silver"` for dataset-builder compatibility.
+- Local generation and judging require `transformers` and `torch`, and the requested model weights must already be available locally or in your Hugging Face cache.
+- To calibrate the local judge, use `07a_export_judge_prompts.py` and `07b_import_manual_judgments.py` on a small subset only.
+- For that calibration subset, you can export only a few candidates with `python scripts/07a_export_judge_prompts.py --limit 10`.
+
 ### Judging
 ```bash
 python scripts/07a_export_judge_prompts.py
@@ -76,6 +105,18 @@ Fallback behavior in the manual importers:
 - If `hard_fail_reasons` or `failure_tags` are missing in raw judge output, the importer defaults them to empty lists.
 - If a per-dimension rubric `reason` is missing, the importer fills an empty string.
 - If `summary` is missing in raw judge output, the importer writes `Manual judgment imported without summary.`
+
+### Dataset builders
+```bash
+python scripts/08_build_sft_dataset.py
+python scripts/09_build_dpo_dataset.py
+```
+
+Builder rules:
+- `08_build_sft_dataset.py` builds SFT rows from `storage_bucket == "accepted_silver"` only.
+- `09_build_dpo_dataset.py` builds DPO pairs from `accepted_silver` vs `rejected` rows for the same `task_id`.
+- `weak_baseline` is preserved as a separate provenance bucket and is not silently mixed into SFT or DPO.
+- `total_score` in judged rows is treated as the compatibility-score alias, and the builders also preserve `compatibility_total_score_0to2` and `raw_total_score_1to5` when available.
 
 ## Notes
 - External API calls are placeholders/stubs.
