@@ -304,6 +304,13 @@ def _normalize_quotes(text: str) -> str:
     )
 
 
+def sanitize_manual_raw_text(raw_text: str) -> str:
+    text = raw_text
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    return text.replace("\u2028", "\n").replace("\u2029", "\n")
+
+
 def _extract_balanced_region(text: str, start_idx: int) -> str | None:
     opening = text[start_idx]
     if opening not in "{[":
@@ -382,7 +389,8 @@ def extract_json_payload(
     context: str,
     predicate: Callable[[Any], bool] | None = None,
 ) -> Any:
-    snippets = iter_json_snippets(raw_text)
+    sanitized_text = sanitize_manual_raw_text(raw_text)
+    snippets = iter_json_snippets(sanitized_text)
     parse_errors: list[str] = []
 
     for snippet in snippets:

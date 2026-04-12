@@ -66,6 +66,7 @@ Defaults:
 
 Fallback behavior in the manual importers:
 - `05b_import_manual_candidates.py` accepts raw text with extra prose or fenced code blocks and extracts JSON safely.
+- Before JSON extraction, the importers strip a leading BOM and convert U+2028/U+2029 line separators into normal newlines, because pasted GPT-web text sometimes includes them.
 - `05b_import_manual_candidates.py --allow-plain-final-proposal` wraps a bare `final_proposal` object with a fallback `reasoning_trace`.
 - If `reasoning_trace` is a plain string, the candidate importer wraps it as `{"note": ...}`.
 - `07b_import_manual_judgments.py` accepts `rubric` or legacy `scores` in raw judge output.
