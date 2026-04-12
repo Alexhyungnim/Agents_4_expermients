@@ -1,0 +1,13 @@
+rubric:
+  - resource_consistency
+  - variable_quality
+  - control_strategy
+  - measurement_plan
+  - analysis_plan
+  - evidence_grounding
+  - novelty_or_usefulness
+
+scores:
+  0: poor_or_missing
+  1: partial
+  2: strong

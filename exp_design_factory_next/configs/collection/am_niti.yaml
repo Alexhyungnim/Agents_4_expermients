@@ -1,0 +1,37 @@
+project_name: exp_design_factory
+
+collection:
+  domain: additive_manufacturing
+  journals:
+    - Additive Manufacturing
+    - Materials & Design
+    - Journal of Materials Research and Technology
+    - Scripta Materialia
+    - Acta Materialia
+  years:
+    start: 2020
+    end: 2026
+  keywords:
+    - "directed energy deposition"
+    - "laser metal deposition"
+    - "NiTi"
+    - "shape memory alloy"
+  paper_type:
+    - experimental
+    - research_article
+  max_papers: 500
+
+download:
+  allow_pdf_download: true
+  save_dir: data/raw/pdf
+
+parse:
+  parser: grobid
+  grobid_url: "http://localhost:8070/api/processFulltextDocument"
+
+chunking:
+  min_words: 120
+  window_size: 1800
+  step: 1200
+  matched_groups_required: 2
+  total_hits_required: 3

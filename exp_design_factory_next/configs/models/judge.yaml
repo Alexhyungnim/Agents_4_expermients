@@ -1,0 +1,10 @@
+judge:
+  provider: placeholder
+  model_name: strong_judge_B
+  temperature: 0.0
+  max_tokens: 1800
+
+thresholds:
+  min_total_score: 11
+  hard_fail_reject: true
+  require_rule_checks_all_clear: true
