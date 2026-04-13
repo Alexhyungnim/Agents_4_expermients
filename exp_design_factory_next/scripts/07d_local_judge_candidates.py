@@ -5,8 +5,9 @@ from pathlib import Path
 
 from common import (
     LocalTransformersLLM,
+    build_local_judge_prompt,
+    build_local_judge_repair_prompt,
     build_structural_fallback_judged_row,
-    build_judge_prompt,
     build_rule_only_judged_row,
     compute_compatibility_total_score_0to2,
     compute_detailed_verdict,
@@ -22,6 +23,7 @@ from common import (
     normalize_candidate_record,
     normalize_manual_judge_payload,
     normalize_task_record,
+    salvage_local_judge_payload,
     upsert_jsonl_rows,
 )
 
@@ -80,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-name",
-        default="Qwen/Qwen2.5-3B-Instruct",
+        default="Qwen/Qwen2-1.5B-Instruct",
         help="Local Hugging Face model name for judging.",
     )
     parser.add_argument(
@@ -91,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=1200,
+        default=320,
         help="Maximum new tokens for each local judge call.",
     )
     parser.add_argument(
@@ -105,7 +107,34 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip candidates whose local judge output cannot be parsed.",
     )
+    parser.add_argument(
+        "--repair-attempts",
+        type=int,
+        default=1,
+        help="Number of local repair attempts after an unparseable judge output.",
+    )
+    parser.add_argument(
+        "--repair-max-new-tokens",
+        type=int,
+        default=220,
+        help="Maximum new tokens for each local repair attempt.",
+    )
     return parser.parse_args()
+
+
+def parse_or_salvage_local_judge_payload(raw_text: str, *, context: str) -> tuple[dict[str, object], str]:
+    try:
+        payload = extract_json_payload(
+            raw_text,
+            context=context,
+            predicate=looks_like_judge_payload,
+        )
+        return payload, "direct"
+    except Exception as direct_exc:
+        salvaged = salvage_local_judge_payload(raw_text)
+        if salvaged is not None:
+            return salvaged, "salvaged"
+        raise direct_exc
 
 
 def main() -> None:
@@ -136,6 +165,9 @@ def main() -> None:
     llm = LocalTransformersLLM(args.model_name)
     judged_rows: list[dict[str, object]] = []
     errors: list[str] = []
+    initial_direct_rows = 0
+    initial_salvaged_rows = 0
+    repaired_rows = 0
     fallback_rows = 0
 
     for candidate_id, candidate in candidates.items():
@@ -161,18 +193,26 @@ def main() -> None:
             )
             continue
 
-        prompt = build_judge_prompt(task, candidate)
+        prompt = build_local_judge_prompt(
+            task,
+            candidate,
+            rule_checks=rule_first_row.get("rule_checks"),
+        )
+        raw_text = ""
         try:
             raw_text = llm.complete(
                 prompt,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
             )
-            payload = extract_json_payload(
+            payload, parse_mode = parse_or_salvage_local_judge_payload(
                 raw_text,
                 context=f"local judgment for {candidate_id}",
-                predicate=looks_like_judge_payload,
             )
+            if parse_mode == "direct":
+                initial_direct_rows += 1
+            else:
+                initial_salvaged_rows += 1
             normalized = normalize_manual_judge_payload(
                 payload,
                 candidate=candidate,
@@ -216,6 +256,71 @@ def main() -> None:
             }
             judged_rows.append(row)
         except Exception as exc:
+            repaired_payload: dict[str, object] | None = None
+            last_exc = exc
+            for attempt_idx in range(1, max(0, args.repair_attempts) + 1):
+                repair_prompt = build_local_judge_repair_prompt(raw_text)
+                repair_text = llm.complete(
+                    repair_prompt,
+                    max_new_tokens=args.repair_max_new_tokens,
+                    temperature=0.0,
+                )
+                try:
+                    repaired_payload, parse_mode = parse_or_salvage_local_judge_payload(
+                        repair_text,
+                        context=f"local judgment repair {attempt_idx} for {candidate_id}",
+                    )
+                    normalized = normalize_manual_judge_payload(
+                        repaired_payload,
+                        candidate=candidate,
+                        task=task,
+                    )
+
+                    raw_total_score_1to5 = compute_raw_total_score_1to5(normalized["rubric"])
+                    compatibility_total_score_0to2 = compute_compatibility_total_score_0to2(
+                        normalized["rubric_compatibility"]
+                    )
+                    detailed_verdict = compute_detailed_verdict(
+                        compatibility_total_score_0to2,
+                        normalized["hard_fail"],
+                    )
+                    overall_verdict = compute_overall_verdict(
+                        compatibility_total_score_0to2,
+                        normalized["hard_fail"],
+                    )
+                    storage_bucket = compute_storage_bucket(candidate["candidate_source"], overall_verdict)
+
+                    row = {
+                        "candidate_id": candidate["candidate_id"],
+                        "task_id": candidate["task_id"],
+                        "candidate_source": candidate["candidate_source"],
+                        "judge_model": f"{args.judge_model}_repair",
+                        "judge_contract_version": "judge_v0_local",
+                        "rubric": normalized["rubric"],
+                        "rubric_compatibility": normalized["rubric_compatibility"],
+                        "rule_checks": normalized["rule_checks"],
+                        "hard_fail": normalized["hard_fail"],
+                        "hard_fail_reasons": normalized["hard_fail_reasons"],
+                        "failure_tags": normalized["failure_tags"],
+                        "raw_total_score_1to5": raw_total_score_1to5,
+                        "compatibility_total_score_0to2": compatibility_total_score_0to2,
+                        "total_score": compatibility_total_score_0to2,
+                        "detailed_verdict": detailed_verdict,
+                        "overall_verdict": overall_verdict,
+                        "storage_bucket": storage_bucket,
+                        "summary": normalized["summary"],
+                        "overall_reasoning": normalized["overall_reasoning"],
+                    }
+                    judged_rows.append(row)
+                    repaired_rows += 1
+                    break
+                except Exception as repair_exc:
+                    last_exc = repair_exc
+                    repaired_payload = None
+
+            if repaired_payload is not None:
+                continue
+
             judged_rows.append(
                 build_structural_fallback_judged_row(
                     candidate=candidate,
@@ -224,7 +329,7 @@ def main() -> None:
                     judge_contract_version="judge_v0_local",
                     summary_note=(
                         "Local judge fallback used because the local LLM judgment "
-                        f"could not be parsed: {exc}"
+                        f"could not be parsed after repair attempts: {last_exc}"
                     ),
                 )
             )
@@ -254,6 +359,10 @@ def main() -> None:
 
     print(f"Wrote {len(judged_rows)} judged row(s) to {out_path}")
     print(f"Materialized local-only bucket views under {args.bucket_dir}")
+    print(f"First-pass local judge JSON extractions: {initial_direct_rows}")
+    print(f"First-pass malformed-output salvages: {initial_salvaged_rows}")
+    if repaired_rows:
+        print(f"Recovered local judge rows via repair attempts: {repaired_rows}")
     if fallback_rows:
         print(f"Used structural fallback judging for {fallback_rows} candidate(s).")
     if errors:

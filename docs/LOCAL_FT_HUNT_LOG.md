@@ -171,3 +171,86 @@ python3.11 scripts/09_build_dpo_dataset.py
 - The local judge still fails to emit stable canonical JSON with the small offline model in this worktree.
 - The current factory is therefore viable because the local LLM is attempted first, and a deterministic structural fallback preserves the canonical judged schema when parsing fails.
 - Weak-baseline generation and judging were not required to hit the success criteria for this hunt, so they were not rerun here.
+
+## Iteration 4
+
+### Goal
+
+Reduce structural-fallback usage in `07d_local_judge_candidates.py` without changing the canonical judged schema.
+
+### Commands run
+
+```bash
+cd work_integration/exp_design_factory_next
+rm -f data/processed/judged/judged_candidates.jsonl
+
+../.venv/bin/python scripts/07d_local_judge_candidates.py \
+  --model-name Qwen/Qwen2-0.5B-Instruct \
+  --judge-model local_hf_qwen2_0p5b_judge \
+  --max-new-tokens 220 \
+  --temperature 0.0
+
+python3.11 - <<'PY'
+import json
+from collections import Counter
+from pathlib import Path
+rows = [json.loads(x) for x in Path('data/processed/judged/judged_candidates.jsonl').read_text(encoding='utf-8').splitlines() if x.strip()]
+print(Counter(r['judge_model'] for r in rows))
+print(Counter(r['storage_bucket'] for r in rows))
+PY
+```
+
+### Code changes in this iteration
+
+- `exp_design_factory_next/scripts/common.py`
+  - added a compact local-only judge prompt with:
+    - integer-only rubric scores
+    - no per-dimension reasons in the raw local output
+    - no `rule_checks` echo requirement
+    - shorter task/candidate snapshots
+  - added a tiny local repair prompt for malformed judge output
+  - made rubric normalization accept compact score-only entries such as `"objective_clarity": 4`
+  - added malformed-output salvage for cases where rubric scores are present in text but the JSON wrapper is incomplete
+- `exp_design_factory_next/scripts/07d_local_judge_candidates.py`
+  - switched the local path from the full manual/web judge prompt to the compact local-only judge prompt
+  - reduced default local judge `max_new_tokens` from `1200` to `320`
+  - changed the default local judge model to `Qwen/Qwen2-1.5B-Instruct`
+  - kept the structural fallback path intact as the final safety net
+- `exp_design_factory_next/README.md`
+  - documented the compact local judge path and the new default judge model
+
+### What happened
+
+- On the same local-only strong candidate set, the local judge became much more parseable.
+- Baseline from Iteration 3 with the same `Qwen2-0.5B-Instruct` judge command:
+  - `3/3` candidates fell back to the structural judge
+- After the compact local judge prompt patch:
+  - `2/3` judged rows were written by the local judge itself
+  - only `1/3` candidate still needed structural fallback
+
+### Measured result
+
+- `07d_local_judge_candidates.py` printed:
+  - `First-pass local judge JSON extractions: 3`
+  - `First-pass malformed-output salvages: 0`
+  - `Used structural fallback judging for 1 candidate(s).`
+- The written judged rows showed:
+  - `local_hf_qwen2_0p5b_judge = 2`
+  - `local_hf_qwen2_0p5b_judge_fallback = 1`
+
+### Why this improved parseability
+
+- The old local judge prompt reused the verbose manual/web schema, which was too long for a small offline model and encouraged truncation.
+- The new local judge prompt asks for a much shorter JSON object:
+  - top-level fields only
+  - rubric as integer values instead of nested `{score, reason}` objects
+  - no `overall_reasoning`
+  - no `rule_checks` echo
+- The importer still expands that compact raw output into the same canonical judged row schema after parsing.
+
+### Current status after Iteration 4
+
+- Canonical judged output schema: unchanged
+- Bucket semantics: unchanged
+- Dataset builders: still compatible
+- Structural fallback: still available and still used when local judging remains malformed

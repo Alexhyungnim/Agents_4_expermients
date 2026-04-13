@@ -73,8 +73,10 @@ Notes:
 - `05d_generate_local_candidates.py` appends local-model candidates into the same canonical `candidates.jsonl`.
 - `07c_rule_grade_candidates.py` tags rule-based failures before any local LLM judging.
 - `07d_local_judge_candidates.py` writes canonical judged rows and also materializes local-only bucket views under `data/processed/judged/local_only_buckets/` from the canonical strong and weak judged files together.
+- `07d_local_judge_candidates.py` now uses a compact local-only judge prompt that asks for integer-only rubric scores, attempts one small local repair pass for malformed JSON, and keeps the structural fallback as a safety net.
 - The local-only bucket view `accepted_silver_lite.jsonl` is a convenience sidecar for local-first review. Canonical judged rows still use `storage_bucket == "accepted_silver"` for dataset-builder compatibility.
 - Local generation and judging require `transformers` and `torch`, and the requested model weights must already be available locally or in your Hugging Face cache.
+- The default local judge model is now `Qwen/Qwen2-1.5B-Instruct` for a better parseability/speed balance. For faster but weaker judging, you can still pass `--model-name Qwen/Qwen2-0.5B-Instruct`.
 - To calibrate the local judge, use `07a_export_judge_prompts.py` and `07b_import_manual_judgments.py` on a small subset only.
 - For that calibration subset, you can export only a few candidates with `python scripts/07a_export_judge_prompts.py --limit 10`.
 

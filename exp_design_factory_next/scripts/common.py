@@ -777,6 +777,99 @@ Use exactly this schema:
 """.strip()
 
 
+def build_local_judge_prompt(
+    task: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    rule_checks: dict[str, bool] | None = None,
+) -> str:
+    resources = task.get("available_resources", {})
+    proposal = candidate["final_proposal"]
+    rule_checks = rule_checks or {}
+
+    task_snapshot = {
+        "goal": str(task.get("goal", "")).strip(),
+        "equipment": normalize_string_list(resources.get("equipment", [])),
+        "materials": normalize_string_list(resources.get("materials", [])),
+        "constraints": normalize_string_list(resources.get("constraints", [])),
+        "forbidden_items": normalize_string_list(resources.get("forbidden_items", [])),
+        "evidence_chunk_ids": [str(x) for x in task.get("evidence_chunk_ids", [])],
+    }
+    candidate_snapshot = {
+        "goal": str(proposal.get("goal", "")).strip(),
+        "hypothesis": str(proposal.get("hypothesis", "")).strip(),
+        "resources_used": normalize_string_list(proposal.get("resources_used", [])),
+        "independent_variables": normalize_string_list(proposal.get("independent_variables", [])),
+        "dependent_variables": normalize_string_list(proposal.get("dependent_variables", [])),
+        "controls": normalize_string_list(proposal.get("controls", [])),
+        "conditions": normalize_string_list(proposal.get("design", {}).get("conditions", [])),
+        "replicates": proposal.get("design", {}).get("replicates"),
+        "measurement_plan": normalize_string_list(proposal.get("measurement_plan", [])),
+        "analysis_plan": normalize_string_list(proposal.get("analysis_plan", [])),
+        "feasibility_checks": normalize_string_list(proposal.get("feasibility_checks", [])),
+        "evidence_used": [str(x) for x in proposal.get("evidence_used", [])],
+    }
+    compact_rubric = ", ".join(f'"{key}": 1' for key in RUBRIC_DIMENSIONS_V0)
+
+    return f"""Return one valid JSON object only. No markdown. No explanation.
+
+Judge this experiment proposal against the task resources and constraints only.
+Use integer rubric scores only.
+Do not include per-dimension reasons.
+Do not output rule_checks.
+Keep summary under 18 words.
+
+Scoring scale:
+- 1 or 2 = weak or missing
+- 3 = partial
+- 4 or 5 = strong
+
+Rubric meaning:
+- objective_clarity = clear goal and hypothesis
+- factor_response_levels = IV, DV, conditions, replicates
+- design_choice_appropriateness = design matches the goal
+- interaction_curvature_awareness = enough conditions for trend or curvature learning
+- resource_aware_design = narrow and realistic for listed resources
+- execution_feasibility = executable with listed setup
+- documentation_rigor = procedure, measurements, and analysis are specified
+- blocking_awareness = controls, fixed settings, and risks are acknowledged
+- iterative_experimentation = good first-pass experiment
+- bom_compliance = no unsupported or forbidden items
+- claim_discipline = evidence-grounded and restrained claims
+
+Task:
+{json.dumps(task_snapshot, ensure_ascii=False)}
+
+Candidate:
+{json.dumps(candidate_snapshot, ensure_ascii=False)}
+
+Rule hints:
+{json.dumps(rule_checks, ensure_ascii=False)}
+
+Return exactly this shape:
+{{"hard_fail": false, "hard_fail_reasons": [], "failure_tags": [], "rubric": {{{compact_rubric}}}, "summary": ""}}
+""".strip()
+
+
+def build_local_judge_repair_prompt(raw_text: str) -> str:
+    compact_rubric = ", ".join(f'"{key}": 1' for key in RUBRIC_DIMENSIONS_V0)
+    clipped = sanitize_manual_raw_text(raw_text).strip()[:2400]
+    return f"""Rewrite the malformed output below into one valid JSON object only.
+
+Rules:
+- keep the same judgment meaning if possible
+- rubric values must be integers 1 to 5
+- do not add explanation outside the JSON
+- keep summary under 18 words
+
+Required shape:
+{{"hard_fail": false, "hard_fail_reasons": [], "failure_tags": [], "rubric": {{{compact_rubric}}}, "summary": ""}}
+
+Malformed output:
+{clipped}
+""".strip()
+
+
 RAG1_SECTION_LABELS = [
     "Candidate Experiment",
     "Why This Is Feasible With Current BOM",
@@ -1141,6 +1234,16 @@ def looks_like_judge_payload(payload: Any) -> bool:
 
 
 def _normalize_rubric_entry(value: Any, *, key: str) -> dict[str, Any]:
+    if isinstance(value, int):
+        score = value
+        if score not in {1, 2, 3, 4, 5}:
+            raise ValueError(f"rubric[{key}] score must be 1, 2, 3, 4, or 5")
+        return {"score": score, "reason": ""}
+    if isinstance(value, str) and value.strip().isdigit():
+        score = int(value.strip())
+        if score not in {1, 2, 3, 4, 5}:
+            raise ValueError(f"rubric[{key}] score must be 1, 2, 3, 4, or 5")
+        return {"score": score, "reason": ""}
     if not isinstance(value, dict):
         raise ValueError(f"rubric[{key}] must be an object")
     if "score" not in value:
@@ -1167,6 +1270,52 @@ def normalize_rubric_v0(raw_payload: dict[str, Any]) -> dict[str, Any]:
     for key in RUBRIC_DIMENSIONS_V0:
         out[key] = _normalize_rubric_entry(rubric[key], key=key)
     return out
+
+
+def salvage_local_judge_payload(raw_text: str) -> dict[str, Any] | None:
+    text = _normalize_quotes(sanitize_manual_raw_text(raw_text))
+    rubric: dict[str, int] = {}
+
+    for key in RUBRIC_DIMENSIONS_V0:
+        pattern = re.compile(
+            rf'["\']?{re.escape(key)}["\']?\s*:\s*(?:\{{[^{{}}]*?["\']score["\']\s*:\s*)?([1-5])',
+            re.IGNORECASE | re.DOTALL,
+        )
+        match = pattern.search(text)
+        if not match:
+            return None
+        rubric[key] = int(match.group(1))
+
+    payload: dict[str, Any] = {"rubric": rubric}
+
+    hard_fail_match = re.search(r'["\']?hard_fail["\']?\s*:\s*(true|false)', text, re.IGNORECASE)
+    if hard_fail_match:
+        payload["hard_fail"] = hard_fail_match.group(1).lower() == "true"
+
+    for field in ["hard_fail_reasons", "failure_tags"]:
+        array_match = re.search(
+            rf'["\']?{field}["\']?\s*:\s*(\[[^\]]*\])',
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not array_match:
+            continue
+        try:
+            parsed_array = parse_json_loose(array_match.group(1))
+        except Exception:
+            continue
+        if isinstance(parsed_array, list):
+            payload[field] = [str(item).strip() for item in parsed_array if str(item).strip()]
+
+    summary_match = re.search(
+        r'["\']?summary["\']?\s*:\s*"([^"\n]{0,240})"',
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if summary_match:
+        payload["summary"] = summary_match.group(1).strip()
+
+    return payload
 
 
 def map_raw_rubric_score_1to5_to_compatibility(score: int) -> int:
