@@ -254,3 +254,69 @@ PY
 - Bucket semantics: unchanged
 - Dataset builders: still compatible
 - Structural fallback: still available and still used when local judging remains malformed
+
+## Iteration 5
+
+### Goal
+
+Make `weak_baseline` generation and judging as easy to rerun as the strong local-only path, while keeping canonical judged rows and dataset-builder compatibility unchanged.
+
+### Commands run
+
+```bash
+cd work_integration/exp_design_factory_next
+python3.11 scripts/06_generate_weak_rag.py
+python3.11 scripts/07c_rule_grade_candidates.py --candidate-source weak_baseline
+../.venv/bin/python scripts/07d_local_judge_candidates.py \
+  --candidate-source weak_baseline \
+  --judge-model local_hf_qwen2_1p5b_judge_weak
+
+python3.11 scripts/08_build_sft_dataset.py
+python3.11 scripts/09_build_dpo_dataset.py
+```
+
+### Code changes in this iteration
+
+- `exp_design_factory_next/scripts/common.py`
+  - added deterministic `build_weak_baseline_candidate_record(...)` so the weak path writes canonical candidate rows directly from `tasks.jsonl`
+  - made `materialize_local_bucket_views(...)` return bucket counts so the weak/strong combined view is easy to verify after each judge run
+  - added `canonicalize_local_judge_summary(...)` so weak judged rows do not keep contradictory positive summaries from noisy local-model output
+- `exp_design_factory_next/scripts/06_generate_weak_rag.py`
+  - replaced the old placeholder writer with a CLI that emits canonical `weak_baseline` candidate rows
+- `exp_design_factory_next/scripts/07c_rule_grade_candidates.py`
+  - added `--candidate-source weak_baseline` shorthand so the weak path no longer needs a long explicit candidates path
+- `exp_design_factory_next/scripts/07d_local_judge_candidates.py`
+  - added `--candidate-source weak_baseline` shorthand
+  - now prints regenerated `accepted_silver_lite / rejected / weak_baseline` bucket counts
+  - now canonicalizes local-judge summaries so weak rows read consistently
+- `exp_design_factory_next/README.md`
+  - documented the simpler weak-baseline local-only commands and bucket-count output
+
+### What happened
+
+- `06_generate_weak_rag.py` wrote a fresh canonical weak candidate row with:
+  - `candidate_source = "weak_baseline"`
+  - a deterministic under-specified proposal structure
+  - no schema drift from the strong candidate format
+- `07c_rule_grade_candidates.py --candidate-source weak_baseline` produced a canonical weak rule-first file without needing an explicit file path.
+- `07d_local_judge_candidates.py --candidate-source weak_baseline` produced a canonical weak judged row in `data/processed/judged/judged_weak_rag_candidates.jsonl`.
+- The local-only bucket views were regenerated from the strong and weak judged files together, with clear counts printed at the end of the run.
+- `08` and `09` still ran without any builder changes, which confirmed that the weak-path cleanup did not break the canonical strong-path dataset contract.
+
+### Result summary
+
+- Weak candidate rows are now easy to regenerate from the same local-only workflow.
+- Weak judged rows stay in the canonical judged schema and keep `storage_bucket = "weak_baseline"`.
+- Local-only bucket views now cleanly materialize:
+  - `accepted_silver_lite = 1`
+  - `rejected = 2`
+  - `weak_baseline = 1`
+- Strong-path dataset builders remain compatible:
+  - `data/processed/datasets/sft/train.jsonl`: non-empty
+  - `data/processed/datasets/dpo/train.jsonl`: non-empty
+
+### Notes
+
+- `weak_baseline` remains a provenance bucket, not an accept/reject bucket.
+- The canonical builders still read strong judged rows for SFT and DPO, so weak cleanup is additive and does not silently mix weak rows into training pairs.
+- The structural fallback path in `07d_local_judge_candidates.py` remains available if the local weak judge output becomes malformed again.

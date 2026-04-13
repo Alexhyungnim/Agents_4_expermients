@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from common import (
+    canonicalize_local_judge_summary,
     LocalTransformersLLM,
     build_local_judge_prompt,
     build_local_judge_repair_prompt,
@@ -14,6 +15,7 @@ from common import (
     compute_overall_verdict,
     compute_raw_total_score_1to5,
     compute_storage_bucket,
+    default_candidates_out_path,
     extract_json_payload,
     infer_candidate_source_from_path,
     load_merged_jsonl_rows,
@@ -21,6 +23,7 @@ from common import (
     looks_like_judge_payload,
     materialize_local_bucket_views,
     normalize_candidate_record,
+    normalize_candidate_source,
     normalize_manual_judge_payload,
     normalize_task_record,
     salvage_local_judge_payload,
@@ -47,8 +50,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--candidates-path",
         type=Path,
-        default=Path("data/processed/candidates/candidates.jsonl"),
+        default=None,
         help="Input candidates JSONL file.",
+    )
+    parser.add_argument(
+        "--candidate-source",
+        default=None,
+        help="Optional source shorthand. Allowed: strong, weak_baseline. Used when --candidates-path is omitted.",
     )
     parser.add_argument(
         "--rule-graded-path",
@@ -146,13 +154,19 @@ def main() -> None:
     if not tasks:
         raise SystemExit(f"No task rows found in {args.tasks_path}")
 
-    source_hint = infer_candidate_source_from_path(args.candidates_path)
+    cli_source = (
+        normalize_candidate_source(args.candidate_source)
+        if args.candidate_source is not None
+        else None
+    )
+    candidates_path = args.candidates_path or default_candidates_out_path(cli_source or "strong")
+    source_hint = cli_source or infer_candidate_source_from_path(candidates_path)
     candidates = {
         row["candidate_id"]: normalize_candidate_record(row, source_hint=source_hint)
-        for row in load_jsonl(args.candidates_path)
+        for row in load_jsonl(candidates_path)
     }
     if not candidates:
-        raise SystemExit(f"No candidate rows found in {args.candidates_path}")
+        raise SystemExit(f"No candidate rows found in {candidates_path}")
 
     rule_path = args.rule_graded_path or default_rule_path(source_hint)
     rule_rows = {
@@ -232,6 +246,12 @@ def main() -> None:
                 normalized["hard_fail"],
             )
             storage_bucket = compute_storage_bucket(candidate["candidate_source"], overall_verdict)
+            summary = canonicalize_local_judge_summary(
+                normalized["summary"],
+                candidate_source=candidate["candidate_source"],
+                overall_verdict=overall_verdict,
+                hard_fail=normalized["hard_fail"],
+            )
 
             row: dict[str, object] = {
                 "candidate_id": candidate["candidate_id"],
@@ -251,7 +271,7 @@ def main() -> None:
                 "detailed_verdict": detailed_verdict,
                 "overall_verdict": overall_verdict,
                 "storage_bucket": storage_bucket,
-                "summary": normalized["summary"],
+                "summary": summary,
                 "overall_reasoning": normalized["overall_reasoning"],
             }
             judged_rows.append(row)
@@ -289,6 +309,12 @@ def main() -> None:
                         normalized["hard_fail"],
                     )
                     storage_bucket = compute_storage_bucket(candidate["candidate_source"], overall_verdict)
+                    summary = canonicalize_local_judge_summary(
+                        normalized["summary"],
+                        candidate_source=candidate["candidate_source"],
+                        overall_verdict=overall_verdict,
+                        hard_fail=normalized["hard_fail"],
+                    )
 
                     row = {
                         "candidate_id": candidate["candidate_id"],
@@ -308,7 +334,7 @@ def main() -> None:
                         "detailed_verdict": detailed_verdict,
                         "overall_verdict": overall_verdict,
                         "storage_bucket": storage_bucket,
-                        "summary": normalized["summary"],
+                        "summary": summary,
                         "overall_reasoning": normalized["overall_reasoning"],
                     }
                     judged_rows.append(row)
@@ -355,10 +381,17 @@ def main() -> None:
         [strong_judged_path, weak_judged_path],
         key_field="candidate_id",
     )
-    materialize_local_bucket_views(bucket_rows, out_dir=args.bucket_dir)
+    bucket_counts = materialize_local_bucket_views(bucket_rows, out_dir=args.bucket_dir)
 
     print(f"Wrote {len(judged_rows)} judged row(s) to {out_path}")
     print(f"Materialized local-only bucket views under {args.bucket_dir}")
+    print(
+        "Bucket view counts: "
+        f"accepted_silver_lite={bucket_counts['accepted_silver_lite']} "
+        f"rejected={bucket_counts['rejected']} "
+        f"weak_baseline={bucket_counts['weak_baseline']}"
+    )
+    print(f"candidate_source={source_hint} candidates_path={candidates_path}")
     print(f"First-pass local judge JSON extractions: {initial_direct_rows}")
     print(f"First-pass malformed-output salvages: {initial_salvaged_rows}")
     if repaired_rows:

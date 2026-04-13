@@ -1,45 +1,68 @@
 from __future__ import annotations
-import json
+
+import argparse
 from pathlib import Path
 
+from common import (
+    build_weak_baseline_candidate_record,
+    default_candidates_out_path,
+    load_jsonl,
+    normalize_task_record,
+    upsert_jsonl_rows,
+)
 
-def load_jsonl(path: Path):
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                yield json.loads(line)
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate deterministic weak-baseline candidate rows for the local-only workflow."
+    )
+    parser.add_argument(
+        "--tasks-path",
+        type=Path,
+        default=Path("data/processed/tasks/tasks.jsonl"),
+        help="Input tasks JSONL file.",
+    )
+    parser.add_argument(
+        "--out-path",
+        type=Path,
+        default=default_candidates_out_path("weak_baseline"),
+        help="Output weak-baseline candidates JSONL file.",
+    )
+    parser.add_argument(
+        "--n-candidates-per-task",
+        type=int,
+        default=1,
+        help="Number of weak baseline variants to write per task.",
+    )
+    parser.add_argument(
+        "--generator-model",
+        default="weak_rag_baseline",
+        help="Generator model label to store in weak-baseline candidate rows.",
+    )
+    return parser.parse_args()
 
 
 def main() -> None:
-    tasks_path = Path("data/processed/tasks/tasks.jsonl")
-    out = Path("data/processed/candidates/weak_rag_candidates.jsonl")
-    out.parent.mkdir(parents=True, exist_ok=True)
+    args = parse_args()
+    tasks = [normalize_task_record(row) for row in load_jsonl(args.tasks_path)]
+    if not tasks:
+        raise SystemExit(f"No task rows found in {args.tasks_path}")
+    if args.n_candidates_per_task < 1:
+        raise SystemExit("--n-candidates-per-task must be at least 1")
 
-    with out.open("w", encoding="utf-8") as f:
-        for task in load_jsonl(tasks_path):
-            row = {
-                "candidate_id": f"weak_{task['task_id']}_01",
-                "task_id": task["task_id"],
-                "generator_model": "weak_rag_baseline",
-                "candidate_rank": 1,
-                "reasoning_trace": {"note": "weak baseline"},
-                "final_proposal": {
-                    "goal": task["goal"],
-                    "hypothesis": "Weak placeholder hypothesis",
-                    "resources_used": [],
-                    "independent_variables": [],
-                    "dependent_variables": [],
-                    "controls": [],
-                    "design": {"conditions": [], "replicates": None, "procedure_outline": []},
-                    "measurement_plan": [],
-                    "analysis_plan": [],
-                    "feasibility_checks": [],
-                    "evidence_used": []
-                },
-                "raw_text": "weak rag placeholder"
-            }
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(f"Saved weak baseline candidates to {out}")
+    rows = []
+    for task in tasks:
+        for candidate_rank in range(1, args.n_candidates_per_task + 1):
+            rows.append(
+                build_weak_baseline_candidate_record(
+                    task,
+                    candidate_rank=candidate_rank,
+                    generator_model=args.generator_model,
+                )
+            )
+
+    upsert_jsonl_rows(args.out_path, rows, key_field="candidate_id")
+    print(f"Wrote {len(rows)} weak-baseline candidate row(s) to {args.out_path}")
 
 
 if __name__ == "__main__":

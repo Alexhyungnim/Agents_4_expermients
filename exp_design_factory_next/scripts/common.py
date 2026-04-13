@@ -1096,6 +1096,66 @@ def candidate_payload_from_outline_text(
     )
 
 
+def build_weak_baseline_candidate_record(
+    task: dict[str, Any],
+    *,
+    candidate_rank: int = 1,
+    generator_model: str = "weak_rag_baseline",
+) -> dict[str, Any]:
+    available_resources = task.get("available_resources", {})
+    equipment = normalize_string_list(available_resources.get("equipment", []))
+    materials = normalize_string_list(available_resources.get("materials", []))
+    default_ivs, default_dvs = _infer_task_variables(str(task.get("goal", "")))
+
+    iv = default_ivs[0] if default_ivs else "main process setting"
+    dv = default_dvs[0] if default_dvs else "main response"
+    resources_used = _merge_unique_strings(equipment[:1] + materials[:1])
+
+    payload = normalize_candidate_payload(
+        {
+            "reasoning_trace": {
+                "resource_check": "Weak baseline uses only a minimal subset of listed resources.",
+                "variable_mapping": f"Probe {iv} against {dv} with intentionally weak structure.",
+                "control_strategy": "Controls intentionally omitted for the weak baseline.",
+                "measurement_strategy": f"Measure only {dv} in a minimal first pass.",
+                "risk_check": "This weak baseline is intentionally under-specified and should stay in the weak_baseline bucket.",
+            },
+            "final_proposal": {
+                "goal": str(task.get("goal", "")).strip(),
+                "hypothesis": f"{iv} may affect {dv}.",
+                "resources_used": resources_used,
+                "independent_variables": [iv],
+                "dependent_variables": [dv],
+                "controls": [],
+                "design": {
+                    "conditions": [f"one broad setting change in {iv}"],
+                    "replicates": None,
+                    "procedure_outline": [
+                        "Run one minimal exploratory setting.",
+                        f"Check {dv} with the listed lab tools if available.",
+                    ],
+                },
+                "measurement_plan": [dv],
+                "analysis_plan": [],
+                "feasibility_checks": ["Weak baseline intentionally keeps the plan minimal and under-specified."],
+                "evidence_used": [],
+            },
+        },
+        allow_plain_final_proposal=False,
+    )
+
+    return {
+        "candidate_id": build_candidate_id(str(task["task_id"]), int(candidate_rank), "weak_baseline"),
+        "task_id": str(task["task_id"]),
+        "candidate_source": "weak_baseline",
+        "generator_model": generator_model,
+        "candidate_rank": int(candidate_rank),
+        "reasoning_trace": payload["reasoning_trace"],
+        "final_proposal": payload["final_proposal"],
+        "raw_text": "deterministic_weak_baseline_generated_from_task",
+    }
+
+
 def convert_main_rag_outputs_to_candidate_record(
     *,
     task: dict[str, Any],
@@ -1726,11 +1786,60 @@ def build_structural_fallback_judged_row(
     }
 
 
+def canonicalize_local_judge_summary(
+    summary: str,
+    *,
+    candidate_source: str,
+    overall_verdict: str,
+    hard_fail: bool,
+) -> str:
+    text = str(summary or "").strip()
+    lowered = text.lower()
+
+    contradictory_positive = (
+        overall_verdict == "reject"
+        and any(
+            phrase in lowered
+            for phrase in [
+                "meets all criteria",
+                "strong candidate",
+                "accepted",
+                "accept_silver",
+            ]
+        )
+    )
+    contradictory_negative = (
+        overall_verdict == "accept_silver"
+        and any(
+            phrase in lowered
+            for phrase in [
+                "reject",
+                "not valid",
+                "does not meet",
+                "failure",
+            ]
+        )
+    )
+
+    if candidate_source == "weak_baseline":
+        if not text or contradictory_positive:
+            if hard_fail:
+                return "Weak baseline judged as under-specified and retained in the weak_baseline bucket."
+            return "Weak baseline judged and retained in the weak_baseline provenance bucket."
+
+    if not text or contradictory_positive or contradictory_negative:
+        if overall_verdict == "accept_silver":
+            return "Locally judged as acceptable silver for the current task."
+        return "Locally judged as reject for the current task."
+
+    return text
+
+
 def materialize_local_bucket_views(
     rows: list[dict[str, Any]],
     *,
     out_dir: Path,
-) -> None:
+) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
     accepted_silver_lite = [
         row for row in rows
@@ -1751,6 +1860,11 @@ def materialize_local_bucket_views(
     dump_jsonl(out_dir / "accepted_silver_lite.jsonl", accepted_silver_lite)
     dump_jsonl(out_dir / "rejected.jsonl", rejected)
     dump_jsonl(out_dir / "weak_baseline.jsonl", weak_baseline)
+    return {
+        "accepted_silver_lite": len(accepted_silver_lite),
+        "rejected": len(rejected),
+        "weak_baseline": len(weak_baseline),
+    }
 
 
 def normalize_manual_judge_payload(
