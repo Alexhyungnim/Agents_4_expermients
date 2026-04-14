@@ -21,6 +21,7 @@ from common import (
     load_merged_jsonl_rows,
     load_jsonl,
     looks_like_judge_payload,
+    looks_like_collapsed_local_judge_rubric,
     materialize_local_bucket_views,
     normalize_candidate_record,
     normalize_candidate_source,
@@ -232,6 +233,10 @@ def main() -> None:
                 candidate=candidate,
                 task=task,
             )
+            if looks_like_collapsed_local_judge_rubric(normalized):
+                raise ValueError(
+                    "Collapsed local judge rubric with score=1 across all dimensions."
+                )
 
             raw_total_score_1to5 = compute_raw_total_score_1to5(normalized["rubric"])
             compatibility_total_score_0to2 = compute_compatibility_total_score_0to2(
@@ -295,6 +300,10 @@ def main() -> None:
                         candidate=candidate,
                         task=task,
                     )
+                    if looks_like_collapsed_local_judge_rubric(normalized):
+                        raise ValueError(
+                            "Collapsed local judge rubric with score=1 across all dimensions."
+                        )
 
                     raw_total_score_1to5 = compute_raw_total_score_1to5(normalized["rubric"])
                     compatibility_total_score_0to2 = compute_compatibility_total_score_0to2(

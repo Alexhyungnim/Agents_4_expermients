@@ -320,3 +320,80 @@ python3.11 scripts/09_build_dpo_dataset.py
 - `weak_baseline` remains a provenance bucket, not an accept/reject bucket.
 - The canonical builders still read strong judged rows for SFT and DPO, so weak cleanup is additive and does not silently mix weak rows into training pairs.
 - The structural fallback path in `07d_local_judge_candidates.py` remains available if the local weak judge output becomes malformed again.
+
+## Iteration 6
+
+### Goal
+
+Recover a safe strong-candidate diversity strategy after the previous diversity pass regressed the FT factory into all-strong-rows-rejected.
+
+### Strategy
+
+- Reserve `candidate_rank = 1` as a protected baseline-safe candidate per task.
+- Force that baseline candidate to include:
+  - explicit numeric factor levels
+  - listed resources only
+  - strong controls
+  - a clear measurement and analysis plan
+  - direct evidence alignment
+- Derive later strong rows by controlled edits to that protected baseline instead of letting the local LLM freestyle every variant.
+- If the local judge emits a collapsed uniform rubric like all-`1` or all-`5`, prefer the deterministic structural fallback over the low-trust local output.
+
+### Commands run
+
+```bash
+cd work_integration/exp_design_factory_next
+rm -f data/processed/candidates/candidates.jsonl \
+      data/processed/judged/judged_candidates.jsonl \
+      data/processed/judged/rule_first_candidates.jsonl \
+      data/processed/datasets/sft/train.jsonl \
+      data/processed/datasets/dpo/train.jsonl
+
+../.venv/bin/python scripts/05d_generate_local_candidates.py --n-candidates-per-task 3
+python3.11 scripts/07c_rule_grade_candidates.py
+../.venv/bin/python scripts/07d_local_judge_candidates.py --judge-model local_hf_qwen2_1p5b_judge_safe
+python3.11 scripts/08_build_sft_dataset.py
+python3.11 scripts/09_build_dpo_dataset.py
+```
+
+### What happened
+
+- `05d` produced three strong candidates for `task_demo_002`:
+  - rank 1: protected baseline-safe design
+  - rank 2: feasible wider-span contrast variant
+  - rank 3: intentionally undercontrolled contrast variant
+- The local outline model still failed to return a parseable outline for this task, but `05d` now falls back to the deterministic baseline-safe candidate instead of failing the task.
+- `07c` produced the expected rule-first split:
+  - ranks 1 and 2 had clean rule checks
+  - rank 3 was flagged for `missing_controls` and `empty_replicates`
+
+### Failure observed before the final fix
+
+- The local judge first collapsed to all-`1` rubrics for every strong candidate, which rejected the whole strong pool.
+- After rejecting that collapsed output, the repair pass swung to all-`5` rubrics for every strong candidate, which accepted the whole strong pool.
+
+### Final fix in this iteration
+
+- Added a small trust filter so uniform extreme local rubrics like all-`1` or all-`5` are treated as collapsed low-trust outputs.
+- When that happens, `07d_local_judge_candidates.py` now uses the existing structural fallback judge instead.
+- That kept the canonical judged schema unchanged while restoring a usable accepted-vs-rejected split.
+
+### Final result
+
+- Strong judged buckets after rerun:
+  - `accepted_silver = 2`
+  - `rejected = 1`
+- Local-only bucket views after rerun:
+  - `accepted_silver_lite = 2`
+  - `rejected = 1`
+  - `weak_baseline = 1`
+- Dataset builders after rerun:
+  - `data/processed/datasets/sft/train.jsonl`: `2` rows
+  - `data/processed/datasets/dpo/train.jsonl`: `1` row
+
+### Notes
+
+- The strong-pool safety now comes from two layers working together:
+  - the generator always writes one acceptance-optimized baseline-safe candidate
+  - the judge refuses obviously collapsed uniform local rubrics and falls back to structural scoring
+- This keeps the canonical candidate and judged schemas unchanged and stays compatible with `07c`, `07d`, `08`, and `09`.

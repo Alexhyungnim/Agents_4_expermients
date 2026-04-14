@@ -59,26 +59,29 @@ This path uses:
 
 ```bash
 python scripts/05c_import_rag_candidates.py --task-id YOUR_TASK_ID
-python scripts/05d_generate_local_candidates.py --n-candidates-per-task 2
+../.venv/bin/python scripts/05d_generate_local_candidates.py --n-candidates-per-task 3
 python scripts/06_generate_weak_rag.py
 python scripts/07c_rule_grade_candidates.py
-python scripts/07d_local_judge_candidates.py
+../.venv/bin/python scripts/07d_local_judge_candidates.py
 python scripts/07c_rule_grade_candidates.py --candidate-source weak_baseline
-python scripts/07d_local_judge_candidates.py --candidate-source weak_baseline
+../.venv/bin/python scripts/07d_local_judge_candidates.py --candidate-source weak_baseline
 ```
 
 Notes:
 - `05c_import_rag_candidates.py` reads `../outputs/rag1_latest_output.json` and `../outputs/rag2_advice.json` by default and converts them into canonical candidate rows.
 - When imported `rag1/rag2` outputs do not carry exact FT `evidence_chunk_ids`, the importer falls back to the matched task's `evidence_chunk_ids` so rule-first grading does not treat them as a false evidence mismatch.
 - `05d_generate_local_candidates.py` appends local-model candidates into the same canonical `candidates.jsonl`.
+- `05d_generate_local_candidates.py` now protects `candidate_rank = 1` as a conservative baseline-safe candidate with explicit numeric factor levels, listed resources only, strong controls, clear measurements, and task evidence alignment.
+- `05d_generate_local_candidates.py` derives `candidate_rank >= 2` as controlled contrast variants from that protected baseline instead of asking the local LLM to freestyle every variant from scratch.
 - `07c_rule_grade_candidates.py` tags rule-based failures before any local LLM judging.
 - `06_generate_weak_rag.py` now writes deterministic canonical `weak_baseline` candidate rows directly into `data/processed/candidates/weak_rag_candidates.jsonl`.
 - `07d_local_judge_candidates.py` writes canonical judged rows for both strong and weak sources and also materializes local-only bucket views under `data/processed/judged/local_only_buckets/` from the canonical strong and weak judged files together.
 - `07d_local_judge_candidates.py` now uses a compact local-only judge prompt that asks for integer-only rubric scores, attempts one small local repair pass for malformed JSON, and keeps the structural fallback as a safety net.
+- `07d_local_judge_candidates.py` treats uniform extreme local rubrics like all-`1` or all-`5` as collapsed low-trust outputs and falls back to structural judging instead of trusting them.
 - For `weak_baseline`, the local judge path now canonicalizes contradictory or missing summaries so weak rows read consistently even when the raw local model text is noisy.
 - The local-only bucket view `accepted_silver_lite.jsonl` is a convenience sidecar for local-first review. Canonical judged rows still use `storage_bucket == "accepted_silver"` for dataset-builder compatibility.
 - Each `07d_local_judge_candidates.py` run prints the regenerated bucket counts for `accepted_silver_lite`, `rejected`, and `weak_baseline`.
-- Local generation and judging require `transformers` and `torch`, and the requested model weights must already be available locally or in your Hugging Face cache.
+- Local generation and judging require `transformers` and `torch`, and the requested model weights must already be available locally or in your Hugging Face cache, so the local-only commands above use `../.venv/bin/python`.
 - The default local judge model is now `Qwen/Qwen2-1.5B-Instruct` for a better parseability/speed balance. For faster but weaker judging, you can still pass `--model-name Qwen/Qwen2-0.5B-Instruct`.
 - To calibrate the local judge, use `07a_export_judge_prompts.py` and `07b_import_manual_judgments.py` on a small subset only.
 - For that calibration subset, you can export only a few candidates with `python scripts/07a_export_judge_prompts.py --limit 10`.

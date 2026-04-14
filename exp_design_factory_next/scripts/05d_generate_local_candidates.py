@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
+from pathlib import Path
 
 from common import (
     LocalTransformersLLM,
     build_candidate_id_with_label,
+    build_baseline_safe_candidate_payload,
     build_local_candidate_outline_prompt,
+    build_strong_contrast_variant_payload,
     candidate_payload_from_outline_text,
     load_jsonl,
     normalize_task_record,
     upsert_jsonl_rows,
 )
 
-from pathlib import Path
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate canonical candidate rows with a local Hugging Face causal LM."
+        description="Generate one baseline-safe strong candidate plus controlled contrast variants with a local Hugging Face causal LM."
     )
     parser.add_argument(
         "--tasks-path",
@@ -34,36 +34,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-name",
-        default="Qwen/Qwen2.5-3B-Instruct",
+        default="Qwen/Qwen2-1.5B-Instruct",
         help="Local Hugging Face model name.",
     )
     parser.add_argument(
         "--generator-model",
-        default="local_hf_qwen",
+        default="local_hf_qwen2_1p5b",
         help="Generator model label to store in candidate rows.",
     )
     parser.add_argument(
         "--n-candidates-per-task",
         type=int,
-        default=2,
+        default=3,
         help="Number of local candidates to generate per task.",
     )
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=900,
+        default=220,
         help="Maximum new tokens for each candidate generation call.",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.4,
+        default=0.0,
         help="Sampling temperature. Use 0.0 for deterministic generation.",
     )
     parser.add_argument(
         "--skip-invalid",
         action="store_true",
-        help="Skip parse failures instead of failing the whole run.",
+        help="Compatibility flag. Base-outline failures now fall back to a deterministic baseline-safe candidate.",
     )
     return parser.parse_args()
 
@@ -78,9 +78,11 @@ def main() -> None:
 
     llm = LocalTransformersLLM(args.model_name)
     rows: list[dict[str, object]] = []
-    errors: list[str] = []
+    warnings: list[str] = []
 
     for task in tasks:
+        base_seed_payload: dict[str, object] | None = None
+        base_raw_text = ""
         base_prompt = build_local_candidate_outline_prompt(
             task,
             candidate_rank=1,
@@ -92,14 +94,21 @@ def main() -> None:
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
             )
-            base_payload = candidate_payload_from_outline_text(
+            base_seed_payload = candidate_payload_from_outline_text(
                 base_raw_text,
                 task=task,
                 candidate_rank=1,
             )
         except Exception as exc:
-            errors.append(f"{task['task_id']}: base local candidate generation failed: {exc}")
-            continue
+            warnings.append(
+                f"{task['task_id']}: local outline generation fell back to deterministic baseline-safe candidate: {exc}"
+            )
+            base_raw_text = ""
+
+        base_payload = build_baseline_safe_candidate_payload(
+            task,
+            seed_payload=base_seed_payload,
+        )
 
         for candidate_rank in range(1, args.n_candidates_per_task + 1):
             candidate_id = build_candidate_id_with_label(
@@ -108,22 +117,20 @@ def main() -> None:
                 candidate_rank,
                 candidate_source="strong",
             )
-            candidate_payload = deepcopy(base_payload)
-            raw_text = base_raw_text.strip()
-
-            if candidate_rank > 1:
-                # Keep a few deliberately weak strong-side contrast variants so local-only DPO has a chance
-                # to form accepted vs rejected pairs for the same task without changing the schema.
-                candidate_payload["reasoning_trace"]["risk_check"] = (
-                    "Local contrast variant derived from the base candidate for local-only DPO."
+            if candidate_rank == 1:
+                candidate_payload = base_payload
+                raw_text = (base_raw_text.strip() or "deterministic_local_baseline_safe_candidate") + (
+                    "\n\n[baseline_safe_candidate]"
                 )
-                candidate_payload["final_proposal"]["controls"] = []
-                candidate_payload["final_proposal"]["design"]["replicates"] = None
-                if candidate_rank > 2:
-                    candidate_payload["final_proposal"]["analysis_plan"] = []
-                    candidate_payload["final_proposal"]["evidence_used"] = []
-                    candidate_payload["final_proposal"]["feasibility_checks"] = []
-                raw_text = f"{raw_text}\n\n[local_contrast_variant rank={candidate_rank}]"
+            else:
+                candidate_payload, variant_label = build_strong_contrast_variant_payload(
+                    task,
+                    base_payload,
+                    candidate_rank=candidate_rank,
+                )
+                raw_text = (base_raw_text.strip() or "deterministic_local_baseline_safe_candidate") + (
+                    f"\n\n[local_contrast_variant rank={candidate_rank} mode={variant_label}]"
+                )
 
             rows.append(
                 {
@@ -138,17 +145,15 @@ def main() -> None:
                 }
             )
 
-    if errors and not args.skip_invalid:
-        raise SystemExit("Local candidate generation failed:\n- " + "\n- ".join(errors))
     if not rows:
         raise SystemExit("No valid local candidates were generated.")
 
     upsert_jsonl_rows(args.out_path, rows, key_field="candidate_id")
     print(f"Wrote {len(rows)} local candidate row(s) to {args.out_path}")
-    if errors:
-        print(f"Skipped {len(errors)} candidate(s) due to parse/validation errors.")
-        for error in errors:
-            print(f"[WARN] {error}")
+    if warnings:
+        print(f"Used deterministic baseline fallback for {len(warnings)} task(s).")
+        for warning in warnings:
+            print(f"[WARN] {warning}")
 
 
 if __name__ == "__main__":

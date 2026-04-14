@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -935,6 +936,229 @@ def _match_allowed_items(items: list[str], allowed_items: list[str]) -> list[str
     return _merge_unique_strings(matched)
 
 
+def _conditions_have_explicit_numbers(conditions: list[str]) -> bool:
+    return bool(conditions) and all(re.search(r"\d", condition) for condition in conditions)
+
+
+def build_explicit_numeric_condition_levels(
+    task: dict[str, Any],
+    independent_variables: list[str],
+    *,
+    wider: bool = False,
+) -> list[str]:
+    default_ivs, _ = _infer_task_variables(str(task.get("goal", "")))
+    iv = (independent_variables or default_ivs or ["main process setting"])[0]
+    iv_lower = iv.lower()
+
+    if "power" in iv_lower:
+        percentages = [88, 96, 104, 112] if wider else [90, 100, 110]
+        return [
+            f"Laser power = {pct}% of the validated midpoint setpoint"
+            for pct in percentages
+        ]
+
+    if "temperature" in iv_lower:
+        percentages = [95, 100, 105, 110] if wider else [97, 100, 103]
+        return [
+            f"{iv} = {pct}% of the validated midpoint value"
+            for pct in percentages
+        ]
+
+    percentages = [85, 95, 105, 115] if wider else [90, 100, 110]
+    return [
+        f"{iv} = {pct}% of the validated baseline value"
+        for pct in percentages
+    ]
+
+
+def _build_safe_baseline_resources(task: dict[str, Any]) -> list[str]:
+    resources = task.get("available_resources", {})
+    equipment = normalize_string_list(resources.get("equipment", []))
+    materials = normalize_string_list(resources.get("materials", []))
+
+    preferred_equipment = _merge_unique_strings(
+        [
+            next((item for item in equipment if item.lower() == "ded machine"), ""),
+            next((item for item in equipment if item.lower() == "sem"), ""),
+            next((item for item in equipment if "precision saw" in item.lower()), ""),
+            next((item for item in equipment if "mounting press" in item.lower()), ""),
+            next((item for item in equipment if "polishing" in item.lower()), ""),
+        ]
+    )
+    if not preferred_equipment:
+        preferred_equipment = equipment[:4]
+
+    preferred_materials = _merge_unique_strings(
+        [
+            next((item for item in materials if "powder" in item.lower()), ""),
+            next((item for item in materials if "argon" in item.lower()), ""),
+            next((item for item in materials if "resin" in item.lower()), ""),
+        ]
+    )
+    if not preferred_materials:
+        preferred_materials = materials[:3]
+
+    return _merge_unique_strings(preferred_equipment + preferred_materials)
+
+
+def build_baseline_safe_candidate_payload(
+    task: dict[str, Any],
+    *,
+    seed_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    existing = deepcopy(seed_payload) if seed_payload is not None else {
+        "reasoning_trace": {},
+        "final_proposal": {},
+    }
+    existing_proposal = existing.get("final_proposal", {})
+    resources = task.get("available_resources", {})
+    equipment = normalize_string_list(resources.get("equipment", []))
+    default_ivs, default_dvs = _infer_task_variables(str(task.get("goal", "")))
+
+    independent_variables = normalize_string_list(existing_proposal.get("independent_variables", [])) or default_ivs
+    if not independent_variables:
+        independent_variables = ["main process setting"]
+    dependent_variables = normalize_string_list(existing_proposal.get("dependent_variables", [])) or default_dvs
+    if not dependent_variables:
+        dependent_variables = ["main response"]
+
+    iv = independent_variables[0]
+    dv = dependent_variables[0]
+    numeric_conditions = build_explicit_numeric_condition_levels(task, independent_variables)
+    relevant_resources = _build_safe_baseline_resources(task)
+    if not relevant_resources:
+        relevant_resources = equipment[:4]
+
+    evidence_ids = [str(x) for x in task.get("evidence_chunk_ids", []) if str(x).strip()]
+    procedure_outline = [
+        f"Run one DED build at each explicit numeric {iv.lower()} condition within the previously validated stable operating window.",
+        "Keep the same powder lot, shielding setup, geometry, and all non-target process settings across conditions.",
+        "Section each build with the precision saw, then mount, grind, and polish for cross-section imaging.",
+        "Acquire SEM cross-sections for every replicate and record the porosity measurement for each sample.",
+    ]
+    if any(item.lower() == "xrd" for item in equipment):
+        procedure_outline.append("Use XRD only as a secondary sanity check if phase consistency needs confirmation.")
+
+    controls = [
+        f"Keep all non-{iv.lower()} settings fixed across all conditions.",
+        "Use the same NiTi powder lot, argon shielding setup, and sample geometry for every run.",
+        "Prepare every sample with the same sectioning, mounting, grinding, and polishing workflow before SEM imaging.",
+    ]
+    measurement_plan = [
+        f"Quantify {dv.lower()} from SEM cross-sections for every replicate using one consistent image-analysis workflow.",
+        f"Record the exact numeric {iv.lower()} level and replicate identifier for every sample.",
+        f"Summarize {dv.lower()} by condition before comparing the low, midpoint, and high settings.",
+    ]
+    analysis_plan = [
+        f"Compute the mean and spread of {dv.lower()} for each numeric {iv.lower()} level.",
+        f"Plot {dv.lower()} versus {iv.lower()} to check for a monotonic or non-linear trend.",
+        "Use the first-pass result to decide whether a narrower follow-up sweep is justified.",
+    ]
+    feasibility_checks = [
+        "Uses only listed equipment and materials.",
+        f"Uses three explicit numeric {iv.lower()} levels inside the previously validated stable operating window.",
+        "Keeps all non-target settings fixed and includes replicated SEM-based measurements.",
+    ]
+
+    payload = {
+        "reasoning_trace": {
+            "resource_check": "; ".join(relevant_resources) or "Uses only listed equipment and materials.",
+            "variable_mapping": f"{iv}; {dv}",
+            "control_strategy": "; ".join(controls),
+            "measurement_strategy": "; ".join(measurement_plan),
+            "risk_check": "; ".join(feasibility_checks),
+        },
+        "final_proposal": {
+            "goal": str(task.get("goal", "")).strip() or str(existing_proposal.get("goal", "")).strip(),
+            "hypothesis": (
+                f"Within the previously validated operating window, changing {iv.lower()} will change {dv.lower()}."
+            ),
+            "resources_used": relevant_resources,
+            "independent_variables": independent_variables,
+            "dependent_variables": dependent_variables,
+            "controls": controls,
+            "design": {
+                "conditions": numeric_conditions,
+                "replicates": 3,
+                "procedure_outline": procedure_outline,
+            },
+            "measurement_plan": measurement_plan,
+            "analysis_plan": analysis_plan,
+            "feasibility_checks": feasibility_checks,
+            "evidence_used": evidence_ids,
+        },
+    }
+    return normalize_candidate_payload(payload, allow_plain_final_proposal=False)
+
+
+def build_strong_contrast_variant_payload(
+    task: dict[str, Any],
+    baseline_payload: dict[str, Any],
+    *,
+    candidate_rank: int,
+) -> tuple[dict[str, Any], str]:
+    payload = deepcopy(baseline_payload)
+    proposal = payload["final_proposal"]
+    independent_variables = normalize_string_list(proposal.get("independent_variables", []))
+    dependent_variables = normalize_string_list(proposal.get("dependent_variables", []))
+    iv = (independent_variables or _infer_task_variables(str(task.get("goal", "")))[0] or ["main process setting"])[0]
+    dv = (dependent_variables or _infer_task_variables(str(task.get("goal", "")))[1] or ["main response"])[0]
+
+    if candidate_rank == 2:
+        payload["reasoning_trace"]["risk_check"] = (
+            "Feasible contrast variant that widens the numeric screening span while trading off some replication."
+        )
+        payload["final_proposal"]["controls"] = payload["final_proposal"]["controls"][:2]
+        payload["final_proposal"]["design"]["conditions"] = build_explicit_numeric_condition_levels(
+            task,
+            independent_variables,
+            wider=True,
+        )
+        payload["final_proposal"]["design"]["replicates"] = 2
+        payload["final_proposal"]["analysis_plan"] = [
+            f"Screen mean {dv.lower()} across the wider numeric {iv.lower()} range.",
+            "Use the result to choose a narrower follow-up window.",
+        ]
+        payload["final_proposal"]["feasibility_checks"] = [
+            "Uses only listed equipment and materials.",
+            f"Expands the numeric {iv.lower()} span while keeping the plan executable as a first-pass screen.",
+            "Retains evidence alignment and core controls.",
+        ]
+        return normalize_candidate_payload(payload, allow_plain_final_proposal=False), "feasible_span_variant"
+
+    if candidate_rank == 3:
+        payload["reasoning_trace"]["control_strategy"] = (
+            "Controls intentionally reduced in this contrast variant to preserve diversity against the baseline-safe design."
+        )
+        payload["reasoning_trace"]["risk_check"] = (
+            "Deliberately weaker contrast variant with limited controls and no replication."
+        )
+        payload["final_proposal"]["controls"] = []
+        payload["final_proposal"]["design"]["replicates"] = None
+        payload["final_proposal"]["analysis_plan"] = [
+            f"Compare {dv.lower()} qualitatively across the numeric {iv.lower()} conditions."
+        ]
+        payload["final_proposal"]["feasibility_checks"] = [
+            "Fast contrast variant with intentionally weaker controls and replication.",
+        ]
+        return normalize_candidate_payload(payload, allow_plain_final_proposal=False), "undercontrolled_variant"
+
+    payload["reasoning_trace"]["control_strategy"] = (
+        "Only one control retained in this contrast variant, with reduced justification and no replication."
+    )
+    payload["reasoning_trace"]["risk_check"] = (
+        "Deliberately weak contrast variant with thin evidence and minimal analysis."
+    )
+    payload["final_proposal"]["controls"] = payload["final_proposal"]["controls"][:1]
+    payload["final_proposal"]["design"]["replicates"] = None
+    payload["final_proposal"]["analysis_plan"] = []
+    payload["final_proposal"]["feasibility_checks"] = [
+        "Minimal contrast variant retained for rejected-pool diversity.",
+    ]
+    payload["final_proposal"]["evidence_used"] = []
+    return normalize_candidate_payload(payload, allow_plain_final_proposal=False), "thin_justification_variant"
+
+
 def build_local_candidate_outline_prompt(
     task: dict[str, Any],
     *,
@@ -942,9 +1166,9 @@ def build_local_candidate_outline_prompt(
     n_candidates: int,
 ) -> str:
     variant_note = (
-        "Make the safest, most executable first-pass experiment."
+        "Make one conservative baseline-safe first-pass experiment with explicit numeric factor levels, strong controls, clear measurements, and only listed resources."
         if candidate_rank == 1
-        else "Make a weaker contrast variant that is broader, less controlled, or less complete."
+        else "Make a contrast variant that stays resource-feasible but is meaningfully different from the conservative baseline."
     )
     task_json = pretty_json(task)
     return f"""You are drafting one experiment proposal outline for local post-processing.
@@ -1018,13 +1242,8 @@ def candidate_payload_from_outline_text(
         split_conditions = [part.strip(" .") for part in split_source.split(" and ") if part.strip(" .")]
         if len(split_conditions) >= 2:
             conditions = split_conditions
-    if candidate_rank == 1 and not conditions and independent_variables:
-        iv = independent_variables[0]
-        conditions = [
-            f"low {iv}",
-            f"medium {iv}",
-            f"high {iv}",
-        ]
+    if candidate_rank == 1 and (not conditions or not _conditions_have_explicit_numbers(conditions)):
+        conditions = build_explicit_numeric_condition_levels(task, independent_variables)
 
     replicates = _parse_first_int(sections.get("Replicates", ""))
     if replicates is None:
@@ -1578,6 +1797,29 @@ def compute_storage_bucket(candidate_source: str, overall_verdict: str) -> str:
     if candidate_source == "weak_baseline":
         return "weak_baseline"
     return "accepted_silver" if overall_verdict == "accept_silver" else "rejected"
+
+
+def looks_like_collapsed_local_judge_rubric(normalized_payload: dict[str, Any]) -> bool:
+    rubric = normalized_payload.get("rubric", {})
+    if not isinstance(rubric, dict):
+        return False
+
+    try:
+        raw_scores = [int(rubric[key]["score"]) for key in RUBRIC_DIMENSIONS_V0]
+    except Exception:
+        return False
+
+    if not raw_scores:
+        return False
+
+    unique_scores = set(raw_scores)
+    if len(unique_scores) != 1:
+        return False
+
+    only_score = next(iter(unique_scores))
+    # Small local judges sometimes echo the schema template back with the same score everywhere.
+    # When that happens, trust the deterministic structural fallback more than the collapsed rubric.
+    return only_score in {1, 5}
 
 
 def build_rule_first_row(candidate: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
