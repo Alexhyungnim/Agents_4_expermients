@@ -1,9 +1,9 @@
-import json
+mport json
 from pathlib import Path
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llama_index.core import Settings, load_index_from_storage, StorageContext
-from llama_index.core.vector_stores import MetadataFilters, MetadataFilter, FilterCondition
 from llama_index.embeddings.langchain import LangchainEmbedding
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -12,7 +12,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # Simple local LLM wrapper
 # =========================================================
 class LocalQwenLLM:
-    def __init__(self, model_name="Qwen/Qwen3-8B"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-8B"):
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=True,
@@ -27,7 +27,7 @@ class LocalQwenLLM:
         if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-    def complete(self, prompt, max_new_tokens=550):
+    def complete(self, prompt: str, max_new_tokens: int = 550) -> str:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
@@ -44,7 +44,6 @@ class LocalQwenLLM:
         gen_tokens = outputs[0][inputs["input_ids"].shape[1]:]
         text = self.tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
 
-        # lightweight cleanup
         if "<think>" in text.lower():
             idx = text.lower().find("candidate experiment:")
             if idx != -1:
@@ -56,7 +55,7 @@ class LocalQwenLLM:
 # =========================================================
 # Embedding model
 # =========================================================
-LOCAL_EMBED_MODEL = "huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+LOCAL_EMBED_MODEL = "..../huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 Settings.embed_model = LangchainEmbedding(
     HuggingFaceEmbeddings(
@@ -68,59 +67,41 @@ Settings.embed_model = LangchainEmbedding(
 
 
 # =========================================================
-# LLM
+# Shared objects / constants
 # =========================================================
 llm = LocalQwenLLM("Qwen/Qwen3-8B")
 
-
-# =========================================================
-# BOM
-# =========================================================
-available_bom = {
-    "material_family": "steel",
-    "process_family": "Friction Welding",
+AVAILABLE_BOM = {
+    "material_family": "metals",
+    "process_family": "joining",
     "materials": [
-        "carbon steel",
+        "steel",
         "stainless steel",
-        "thermocouple",
+        "aluminum alloy",
     ],
     "equipment": [
-        "friction welding machine",
-        "thermocouple",
+        "welding machine",
         "microhardness tester",
         "tensile testing machine",
         "optical microscope",
-        "SEM",
     ],
     "forbidden_items": [
         "EBSD",
         "synchrotron",
         "CFD simulation",
     ],
-    "goal": "Propose one feasible friction welding experiment on steel-based materials."
+    "goal": "Propose one feasible first-pass joining experiment on metallic materials."
 }
 
-
-# =========================================================
-# Paths
-# =========================================================
 EXPERIMENT_STORAGE_DIR = "outputs/paper_memory_storage_experiment"
 CHUNKS_LABELED_PATH = Path("outputs/chunks_labeled.jsonl")
-
-
-# =========================================================
-# Load index
-# =========================================================
-storage_context = StorageContext.from_defaults(
-    persist_dir=EXPERIMENT_STORAGE_DIR
-)
-paper_card_index = load_index_from_storage(storage_context)
+RAG1_OUTPUT_PATH = Path("outputs/rag1_latest_output.json")
 
 
 # =========================================================
 # Helpers
 # =========================================================
-def overlap_score_text(text, bom):
+def overlap_score_text(text: str, bom: dict) -> int:
     text = (text or "").lower()
     score = 0
 
@@ -139,11 +120,11 @@ def overlap_score_text(text, bom):
     return score
 
 
-def overlap_score_node(node, bom):
+def overlap_score_node(node, bom: dict) -> int:
     return overlap_score_text(node.text or "", bom)
 
 
-def load_labeled_rows(path):
+def load_labeled_rows(path: Path) -> list[dict]:
     rows = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -151,7 +132,7 @@ def load_labeled_rows(path):
     return rows
 
 
-def recover_supporting_chunks(shortlist, labeled_rows, bom, top_chunks_per_paper=2):
+def recover_supporting_chunks(shortlist, labeled_rows: list[dict], bom: dict, top_chunks_per_paper: int = 2) -> dict:
     selected_source_paths = {
         node.metadata.get("source_path", "") for node in shortlist
     }
@@ -193,122 +174,29 @@ def trim_repeated_sections(text: str) -> str:
     return text.strip()
 
 
-# =========================================================
-# Retrieve cards
-# =========================================================
-# filters = MetadataFilters(
-#     filters=[
-#         MetadataFilter(
-#             key="process_families",
-#             value=available_bom["process_family"]
-#         ),
-#     ],
-#     condition=FilterCondition.AND,
-# )
+def build_rag1_prompt(
+    available_bom: dict,
+    card_context: str,
+    chunk_context: str,
+    rag2_feedback: dict | None = None,
+) -> str:
+    feedback_block = ""
 
-retriever = paper_card_index.as_retriever(
-    similarity_top_k=8,
-    # filters=filters,
-)
-retrieved_cards = retriever.retrieve(available_bom["goal"])
+    if rag2_feedback is not None:
+        feedback_block = f"""
 
-# Extra Python-side filter, since retriever filter can still be noisy
-filtered_cards = []
-for node in retrieved_cards:
-    process_vals = " ".join(node.metadata.get("process_families", []))
-    if available_bom["process_family"].lower() in process_vals.lower():
-        filtered_cards.append(node)
+Revision Feedback From RAG2:
+{json.dumps(rag2_feedback, indent=2)}
 
-ranked = sorted(
-    filtered_cards,
-    key=lambda n: overlap_score_node(n, available_bom),
-    reverse=True,
-)
-
-shortlist = ranked[:4]
-
-
-print("Shortlisted paper cards:")
-for i, node in enumerate(shortlist, 1):
-    print(f"\n[{i}] {node.metadata.get('source_title')}")
-    print(f"process_families={node.metadata.get('process_families')}")
-    print(f"material_families={node.metadata.get('material_families')}")
-    print((node.text or "")[:1000], "...\n")
-
-
-# =========================================================
-# Recover raw supporting chunks from chunks_labeled
-# =========================================================
-labeled_rows = load_labeled_rows(CHUNKS_LABELED_PATH)
-paper_to_chunks = recover_supporting_chunks(
-    shortlist=shortlist,
-    labeled_rows=labeled_rows,
-    bom=available_bom,
-    top_chunks_per_paper=2,
-)
-
-print("Recovered supporting chunks:")
-for node in shortlist:
-    source_path = node.metadata.get("source_path", "")
-    title = node.metadata.get("source_title", "")
-    n = len(paper_to_chunks.get(source_path, []))
-    print(f"{title}: {n} chunks")
-
-
-# =========================================================
-# Build card context
-# =========================================================
-card_blocks = []
-for i, node in enumerate(shortlist, 1):
-    card_blocks.append(
-        f"""[Paper Card {i}]
-Title: {node.metadata.get('source_title')}
-DOI: {node.metadata.get('doi')}
-
-{node.text}
+IMPORTANT:
+- Apply only practical feasibility feedback.
+- Keep the core experiment idea unless narrowing is necessary.
+- Prefer reducing variables over expanding scope.
+- Prefer a simpler first-step experiment that is easier to execute and interpret.
+- Do not blindly copy the feedback. Revise the experiment into a clearer and more feasible plan.
 """
-    )
 
-card_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(card_blocks)
-
-
-# =========================================================
-# Build chunk context
-# =========================================================
-chunk_blocks = []
-idx = 1
-
-for node in shortlist:
-    source_path = node.metadata.get("source_path", "")
-    title = node.metadata.get("source_title", "")
-
-    print("CARD PATH:", repr(source_path))
-    for row in paper_to_chunks.get(source_path, []):
-        print("MATCHED CHUNK PATH:", repr(row.get("source_path")))
-        chunk_blocks.append(
-            f"""[Supporting Chunk {idx}]
-Title: {title}
-Chunk ID: {row.get('chunk_id')}
-Text:
-{row.get('text', '')}
-"""
-        )
-        idx += 1
-
-chunk_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(chunk_blocks)
-
-
-source_titles = [
-    node.metadata.get("source_title")
-    for node in shortlist
-    if node.metadata.get("source_title")
-]
-
-
-# =========================================================
-# Prompt
-# =========================================================
-proposal_prompt = f"""
+    return f"""
 You are proposing ONE candidate new experiment.
 
 Use the literature cards as precedent summaries.
@@ -319,6 +207,7 @@ You must respect the constrained BOM.
 Answer in English only.
 Do not output reasoning.
 Do not output <think>.
+Do not assume a specialized process, material subtype unless it is explicitly supported by the BOM.
 
 Available BOM / Lab Capability:
 {json.dumps(available_bom, indent=2)}
@@ -327,10 +216,16 @@ Literature Cards:
 {card_context}
 
 Supporting Evidence Chunks:
-{chunk_context}
+{chunk_context}{feedback_block}
 
 Task:
-Propose ONE feasible experiment that is inspired by the retrieved papers and is compatible with the BOM.
+Propose ONE plausible first-pass experiment that is inspired by the retrieved papers and compatible with the BOM.
+
+Important:
+- The experiment does not need to be fully optimized.
+- Prefer a simple, executable first-step design.
+- Do not use forbidden items.
+- RAG2 will critique feasibility, missing items, and narrowing.
 
 Return in this exact format:
 
@@ -350,39 +245,216 @@ Rules:
 - Distinguish clearly between literature-backed elements and your proposed adaptation.
 - Do not include equipment or materials not supported by the BOM unless you put them under "Missing Capability / Assumption".
 - If the BOM is insufficient, say so explicitly.
+- Focus on proposing a clear first-pass experiment, not a fully optimized final protocol.
+- Do not reintroduce any equipment, parameter, or geometry option that RAG2 explicitly asked you to remove or avoid.
+- If RAG2 identifies an item as missing from the BOM, do not place it under Needed Equipment in the revision.
+- Treat RAG2 narrowing advice as binding unless it directly conflicts with the BOM.
+
 """.strip()
 
 
 # =========================================================
-# Generate proposal
+# Main callable for orchestrator
 # =========================================================
-proposal = llm.complete(proposal_prompt, max_new_tokens=550)
+def run_rag1(
+    rag2_feedback: dict | None = None,
+    cached_exp_evidence: dict | None = None,
+    save_output: bool = True,
+) -> dict:
+    available_bom = AVAILABLE_BOM
 
-if "Candidate Experiment:" in proposal:
-    proposal = proposal[proposal.find("Candidate Experiment:"):].strip()
+    # =====================================================
+    # ROUND 1: retrieve and cache experiment evidence
+    # =====================================================
+    if cached_exp_evidence is None:
+        storage_context = StorageContext.from_defaults(
+            persist_dir=EXPERIMENT_STORAGE_DIR
+        )
+        paper_card_index = load_index_from_storage(storage_context)
 
-proposal = trim_repeated_sections(proposal)
+        retriever = paper_card_index.as_retriever(similarity_top_k=8)
+        retrieved_cards = retriever.retrieve(available_bom["goal"])
 
-proposal += "\n\nSource Papers Used:\n" + "\n".join(f"- {t}" for t in source_titles)
+        filtered_cards = []
 
-print("\n" + "=" * 100)
-print("RAG1 PROPOSAL")
-print("=" * 100)
-print(proposal)
+        target_process = available_bom["process_family"].lower()
+        target_material = available_bom["material_family"].lower()
 
-# =========================================================
-# Save BOM + proposal for RAG2
-# =========================================================
-RAG1_OUTPUT_PATH = Path("outputs/rag1_latest_output.json")
+        for node in retrieved_cards:
+            process_vals = " ".join(node.metadata.get("process_families", [])).lower()
+            material_vals = " ".join(node.metadata.get("material_families", [])).lower()
+            text = (node.text or "").lower()
 
-rag1_output_payload = {
-    "available_bom": available_bom,
-    "rag1_proposal": proposal,
-}
+            process_match = (
+                target_process in process_vals
+                or target_process in text
+            )
 
-RAG1_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            material_match = (
+                target_material in material_vals
+                or target_material in text
+            )
 
-with RAG1_OUTPUT_PATH.open("w", encoding="utf-8") as f:
-    json.dump(rag1_output_payload, f, indent=2, ensure_ascii=False)
+            if process_match or material_match:
+                filtered_cards.append(node)
 
-print(f"\nSaved RAG1 output to: {RAG1_OUTPUT_PATH}")
+        if len(filtered_cards) < 4:
+            filtered_cards = list(retrieved_cards)
+
+        ranked = sorted(
+            filtered_cards,
+            key=lambda n: overlap_score_node(n, available_bom),
+            reverse=True,
+        )
+
+        shortlist = ranked[:7]
+
+        print("RAG1 round-1 retrieval: caching experiment evidence pool.")
+        print("Shortlisted paper cards:")
+        for i, node in enumerate(shortlist, 1):
+            print(f"\n[{i}] {node.metadata.get('source_title')}")
+            print(f"process_families={node.metadata.get('process_families')}")
+            print(f"material_families={node.metadata.get('material_families')}")
+
+        labeled_rows = load_labeled_rows(CHUNKS_LABELED_PATH)
+        paper_to_chunks = recover_supporting_chunks(
+            shortlist=shortlist,
+            labeled_rows=labeled_rows,
+            bom=available_bom,
+            top_chunks_per_paper=2,
+        )
+
+        print("Recovered supporting chunks:")
+        for node in shortlist:
+            source_path = node.metadata.get("source_path", "")
+            title = node.metadata.get("source_title", "")
+            n = len(paper_to_chunks.get(source_path, []))
+            print(f"{title}: {n} chunks")
+
+        cached_exp_evidence = {
+            "cards": [
+                {
+                    "source_title": node.metadata.get("source_title", ""),
+                    "doi": node.metadata.get("doi", ""),
+                    "source_path": node.metadata.get("source_path", ""),
+                    "text": node.text or "",
+                    "process_families": node.metadata.get("process_families", []),
+                    "material_families": node.metadata.get("material_families", []),
+                }
+                for node in shortlist
+            ],
+            "paper_to_chunks": paper_to_chunks,
+        }
+
+    # =====================================================
+    # ROUND 2+: reuse cached experiment evidence only
+    # =====================================================
+    else:
+        print("RAG1 is reusing cached experiment evidence pool.")
+        shortlist = cached_exp_evidence["cards"]
+        paper_to_chunks = cached_exp_evidence["paper_to_chunks"]
+
+    # =====================================================
+    # Build card context
+    # =====================================================
+    card_blocks = []
+    for i, node in enumerate(shortlist, 1):
+        if isinstance(node, dict):
+            title = node.get("source_title", "")
+            doi = node.get("doi", "")
+            text = node.get("text", "")
+        else:
+            title = node.metadata.get("source_title", "")
+            doi = node.metadata.get("doi", "")
+            text = node.text or ""
+
+        card_blocks.append(
+            f"""[Paper Card {i}]
+Title: {title}
+DOI: {doi}
+
+{text}
+"""
+        )
+
+    card_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(card_blocks)
+
+    # =====================================================
+    # Build chunk context
+    # =====================================================
+    chunk_blocks = []
+    idx = 1
+    source_titles = []
+
+    for node in shortlist:
+        if isinstance(node, dict):
+            source_path = node.get("source_path", "")
+            title = node.get("source_title", "")
+        else:
+            source_path = node.metadata.get("source_path", "")
+            title = node.metadata.get("source_title", "")
+
+        if title:
+            source_titles.append(title)
+
+        for row in paper_to_chunks.get(source_path, []):
+            chunk_blocks.append(
+                f"""[Supporting Chunk {idx}]
+Title: {title}
+Chunk ID: {row.get('chunk_id')}
+Text:
+{row.get('text', '')}
+"""
+            )
+            idx += 1
+
+    chunk_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(chunk_blocks)
+
+    # =====================================================
+    # Build prompt
+    # =====================================================
+    if rag2_feedback is not None:
+        print("RAG1 is revising with RAG2 feedback.")
+    else:
+        print("RAG1 is running first-round proposal generation.")
+
+    proposal_prompt = build_rag1_prompt(
+        available_bom=available_bom,
+        card_context=card_context,
+        chunk_context=chunk_context,
+        rag2_feedback=rag2_feedback,
+    )
+
+    # =====================================================
+    # Generate proposal
+    # =====================================================
+    proposal = llm.complete(proposal_prompt, max_new_tokens=550)
+
+    if "Candidate Experiment:" in proposal:
+        proposal = proposal[proposal.find("Candidate Experiment:"):].strip()
+
+    proposal = trim_repeated_sections(proposal)
+    proposal += "\n\nSource Papers Used:\n" + "\n".join(f"- {t}" for t in source_titles)
+
+    print("\n" + "=" * 100)
+    print("RAG1 PROPOSAL")
+    print("=" * 100)
+    print(proposal)
+
+    rag1_output_payload = {
+        "available_bom": available_bom,
+        "rag1_proposal": proposal,
+        "cached_exp_evidence": cached_exp_evidence,
+    }
+
+    if save_output:
+        RAG1_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with RAG1_OUTPUT_PATH.open("w", encoding="utf-8") as f:
+            json.dump(rag1_output_payload, f, indent=2, ensure_ascii=False)
+        print(f"\nSaved RAG1 output to: {RAG1_OUTPUT_PATH}")
+
+    return rag1_output_payload
+
+
+if __name__ == "__main__":
+    run_rag1(rag2_feedback=None, save_output=True)
