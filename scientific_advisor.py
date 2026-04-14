@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llama_index.core import Settings, load_index_from_storage, StorageContext
@@ -11,7 +12,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # Simple local LLM wrapper
 # =========================================================
 class LocalQwenLLM:
-    def __init__(self, model_name="Qwen/Qwen3-8B"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-8B"):
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=True,
@@ -26,7 +27,7 @@ class LocalQwenLLM:
         if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-    def complete(self, prompt, max_new_tokens=2500):
+    def complete(self, prompt: str, max_new_tokens: int = 2500) -> str:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
@@ -48,7 +49,7 @@ class LocalQwenLLM:
 # =========================================================
 # Embedding model
 # =========================================================
-LOCAL_EMBED_MODEL = "hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+LOCAL_EMBED_MODEL = ".../huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 Settings.embed_model = LangchainEmbedding(
     HuggingFaceEmbeddings(
@@ -60,16 +61,11 @@ Settings.embed_model = LangchainEmbedding(
 
 
 # =========================================================
-# LLM
+# Shared objects / constants
 # =========================================================
 llm = LocalQwenLLM("Qwen/Qwen3-8B")
 
-
-# =========================================================
-# Paths
-# =========================================================
-RAG1_OUTPUT_PATH = Path("outputs/rag1_latest_output.json")
-SCIENCE_STORAGE_DIR = "outputs/paper_memory_storage_science"   # change if needed
+SCIENCE_STORAGE_DIR = "outputs/paper_memory_storage_science"
 CHUNKS_LABELED_PATH = Path("outputs/chunks_labeled.jsonl")
 RAG2_OUTPUT_PATH = Path("outputs/rag2_advice.json")
 
@@ -77,7 +73,7 @@ RAG2_OUTPUT_PATH = Path("outputs/rag2_advice.json")
 # =========================================================
 # Helpers
 # =========================================================
-def overlap_score_text(text, bom):
+def overlap_score_text(text: str, bom: dict) -> int:
     text = (text or "").lower()
     score = 0
 
@@ -104,7 +100,7 @@ def overlap_score_text(text, bom):
     return score
 
 
-def load_labeled_rows(path):
+def load_labeled_rows(path: Path) -> list[dict]:
     rows = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -112,7 +108,12 @@ def load_labeled_rows(path):
     return rows
 
 
-def recover_supporting_chunks(shortlist, labeled_rows, bom, top_chunks_per_paper=2):
+def recover_supporting_chunks(
+    shortlist,
+    labeled_rows: list[dict],
+    bom: dict,
+    top_chunks_per_paper: int = 3,
+) -> dict:
     selected_source_paths = {
         node.metadata.get("source_path", "") for node in shortlist
     }
@@ -141,24 +142,24 @@ def recover_supporting_chunks(shortlist, labeled_rows, bom, top_chunks_per_paper
     return paper_to_chunks
 
 
-def build_rag2_query(bom, proposal_text):
+def build_rag2_query(bom: dict, proposal_text: str) -> str:
     return f"""
 Process family: {bom.get("process_family", "")}
 Material family: {bom.get("material_family", "")}
 Goal: {bom.get("goal", "")}
 
 RAG1 experiment proposal:
-{proposal_text[:2200]}
+{proposal_text[:1000]}
 
 Retrieve scientific literature that helps:
 - verify whether this proposed experiment is feasible
-- identify missing practical items or limited capability
+- identify practical execution limits or capability constraints within the current BOM
 - reduce the number of variables
 - simplify the first experiment into a narrower, executable study
 """.strip()
 
 
-def extract_json_block(text: str):
+def extract_json_block(text: str) -> str:
     start = text.find("{")
     if start == -1:
         raise ValueError("No JSON object found.")
@@ -187,135 +188,19 @@ def extract_json_block(text: str):
                 brace_count += 1
             elif ch == "}":
                 brace_count -= 1
-
                 if brace_count == 0:
                     return text[start:i + 1]
 
     raise ValueError("No complete JSON object found.")
 
-# =========================================================
-# Load RAG1 output
-# =========================================================
-if not RAG1_OUTPUT_PATH.exists():
-    raise FileNotFoundError(f"RAG1 output not found: {RAG1_OUTPUT_PATH}")
 
-with RAG1_OUTPUT_PATH.open("r", encoding="utf-8") as f:
-    rag1_data = json.load(f)
-
-available_bom = rag1_data["available_bom"]
-rag1_proposal = rag1_data["rag1_proposal"]
-
-
-# =========================================================
-# Load science index
-# =========================================================
-storage_context = StorageContext.from_defaults(
-    persist_dir=SCIENCE_STORAGE_DIR
-)
-science_index = load_index_from_storage(storage_context)
-
-
-# =========================================================
-# Retrieve science papers
-# =========================================================
-rag2_query = build_rag2_query(available_bom, rag1_proposal)
-
-retriever = science_index.as_retriever(similarity_top_k=6)
-retrieved_science = retriever.retrieve(rag2_query)
-
-shortlist = retrieved_science[:4]
-
-print("\nRetrieved science references for RAG2:")
-for i, node in enumerate(shortlist, 1):
-    print(f"\n[{i}] {node.metadata.get('source_title')}")
-    print(f"Source Title: {node.metadata.get('source_title')}")
-    print(f"DOI: {node.metadata.get('doi', '')}")
-    print(f"Card Type: {node.metadata.get('card_type', '')}")
-    print((node.text or "")[:900], "...\n")
-
-
-# =========================================================
-# Recover raw supporting chunks from chunks_labeled
-# =========================================================
-labeled_rows = load_labeled_rows(CHUNKS_LABELED_PATH)
-paper_to_chunks = recover_supporting_chunks(
-    shortlist=shortlist,
-    labeled_rows=labeled_rows,
-    bom=available_bom,
-    top_chunks_per_paper=2,
-)
-
-print("Recovered supporting chunks:")
-for node in shortlist:
-    source_path = node.metadata.get("source_path", "")
-    title = node.metadata.get("source_title", "")
-    n = len(paper_to_chunks.get(source_path, []))
-    print(f"{title}: {n} chunks")
-
-
-# =========================================================
-# Build science card context
-# =========================================================
-science_blocks = []
-reference_map = {}
-
-for i, node in enumerate(shortlist, 1):
-    ref_id = f"SR{i}"
-    title = node.metadata.get("source_title", f"Science Paper {i}")
-    doi = node.metadata.get("doi", "")
-
-    reference_map[ref_id] = {
-        "title": title,
-        "doi": doi,
-    }
-
-    science_blocks.append(
-        f"""[Science Reference {ref_id}]
-Title: {title}
-DOI: {doi}
-
-{node.text}
-"""
-    )
-
-science_card_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(science_blocks)
-
-
-# =========================================================
-# Build supporting chunk context
-# =========================================================
-chunk_blocks = []
-chunk_idx = 1
-
-source_path_to_ref_id = {
-    node.metadata.get("source_path", ""): f"SR{i}"
-    for i, node in enumerate(shortlist, 1)
-}
-
-for node in shortlist:
-    source_path = node.metadata.get("source_path", "")
-    title = node.metadata.get("source_title", "")
-    ref_id = source_path_to_ref_id.get(source_path, "SRx")
-
-    for row in paper_to_chunks.get(source_path, []):
-        chunk_blocks.append(
-            f"""[Supporting Chunk {chunk_idx}]
-Reference ID: {ref_id}
-Title: {title}
-Chunk ID: {row.get('chunk_id')}
-Text:
-{row.get('text', '')}
-"""
-        )
-        chunk_idx += 1
-
-supporting_chunk_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(chunk_blocks)
-
-
-# =========================================================
-# Prompt
-# =========================================================
-rag2_prompt = f"""
+def build_rag2_prompt(
+    available_bom: dict,
+    rag1_proposal: str,
+    science_card_context: str,
+    supporting_chunk_context: str,
+) -> str:
+    return f"""
 You are RAG2, a literature-grounded experiment feasibility advisor.
 
 Your role:
@@ -328,7 +213,7 @@ Your role:
 
 Focus only on:
 1. Is the experiment feasible with the current BOM?
-2. Are any important materials, equipment, or measurement capabilities missing or limited?
+2. Are there any practical execution limits, uncertainties, or capability constraints within the current BOM?
 3. Is the proposal too broad for a first experiment?
 4. How should the proposal be narrowed so it becomes easier to execute and interpret?
 
@@ -336,10 +221,11 @@ Keep the advice practical and simple.
 Prioritize executable first-step experiments over ambitious broad studies.
 Prefer reducing variables and measurements rather than expanding the design.
 Focus on what can realistically be done in the current lab with the listed BOM.
-Prefer identifying missing practical lab items over abstract evaluation metrics.
+Prefer identifying practical execution limits over abstract evaluation metrics.
 
 Do not give deep theoretical criticism unless it directly affects feasibility or clarity.
 Do not invent unavailable equipment.
+Do not suggest buying new equipment.
 If something is optional rather than essential, say that clearly.
 
 Use the Science Literature Cards for overall context.
@@ -353,6 +239,17 @@ The JSON schema below uses SRx only as a placeholder example.
 
 Do not include any explanation before the JSON.
 Your first character must be the opening brace of the JSON object.
+
+The message_to_rag1 should be the practical synthesis of the narrowing_advice.
+Do not make it generic.
+Write it as a concrete revision brief that RAG1 can directly follow.
+
+Status meaning:
+- strongly_feasible = executable now with current BOM and only minor assumptions
+- mostly_feasible = good core idea, but still needs 1-2 practical revisions
+- partially_feasible = plausible, but still too broad or under-specified
+- limited = significant execution limits remain
+- not_feasible = not realistically executable with current BOM
 
 Available BOM:
 {json.dumps(available_bom, indent=2)}
@@ -370,7 +267,7 @@ Return valid JSON only, in exactly this structure:
 
 {{
   "bom_check": {{
-    "status": "feasible / mostly_feasible / limited / not_feasible",
+    "status": "strongly_feasible / mostly_feasible / partially_feasible / limited / not_feasible",
     "reason": "short explanation",
     "literature_support": [
       {{
@@ -379,10 +276,10 @@ Return valid JSON only, in exactly this structure:
       }}
     ]
   }},
-  "missing_or_limited_items": [
+  "limited_items": [
     {{
-      "item": "item 1",
-      "why_it_matters": "short explanation",
+      "item": "execution limit 1",
+      "why_it_matters": "short explanation of why this limits immediate execution or interpretation",
       "literature_support": [
         {{
           "reference_id": "SRx",
@@ -403,50 +300,232 @@ Return valid JSON only, in exactly this structure:
       ]
     }}
   ],
-  "message_to_rag1": "Short advisory message to RAG1"
+  "message_to_rag1": "3-6 sentence revision instruction to RAG1. It must explicitly incorporate the key narrowing_advice items in natural language. It must say what to keep, what to fix, what to reduce, and what to avoid in the next revision. It should be specific enough that RAG1 can revise the proposal directly from this message."
 }}
 """.strip()
 
 
 # =========================================================
-# Generate advice
+# Main callable for orchestrator
 # =========================================================
-raw_output = llm.complete(rag2_prompt, max_new_tokens=1200)
+def run_rag2(
+    rag1_output: dict,
+    cached_sci_evidence: dict | None = None,
+    save_output: bool = True,
+) -> dict:
+    available_bom = rag1_output["available_bom"]
+    rag1_proposal = rag1_output["rag1_proposal"]
 
-try:
-    json_text = extract_json_block(raw_output)
-    rag2_advice = json.loads(json_text)
-except Exception as e:
-    rag2_advice = {
-        "bom_check": {
-            "status": "parse_failed",
-            "reason": f"Model output could not be parsed as JSON: {str(e)}",
-            "literature_support": []
-        },
-        "missing_or_limited_items": [],
-        "narrowing_advice": [],
-        "message_to_rag1": raw_output.strip()
+    # =====================================================
+    # ROUND 1: retrieve and cache science evidence
+    # =====================================================
+    if cached_sci_evidence is None:
+        storage_context = StorageContext.from_defaults(
+            persist_dir=SCIENCE_STORAGE_DIR
+        )
+        science_index = load_index_from_storage(storage_context)
+
+        rag2_query = build_rag2_query(available_bom, rag1_proposal)
+        retriever = science_index.as_retriever(similarity_top_k=8)
+        retrieved_science = retriever.retrieve(rag2_query)
+
+        ranked_science = sorted(
+            retrieved_science,
+            key=lambda n: overlap_score_text(n.text or "", available_bom),
+            reverse=True,
+        )
+
+        shortlist = ranked_science[:7]
+
+        print("\nRAG2 round-1 retrieval: caching science evidence pool.")
+        print("\nRetrieved science references for RAG2:")
+        for i, node in enumerate(shortlist, 1):
+            score = overlap_score_text(node.text or "", available_bom)
+            print(f"\n[{i}] {node.metadata.get('source_title')}")
+            print(f"Card Type: {node.metadata.get('card_type', '')}")
+            # print(f"BOM overlap score: {score}")
+
+        labeled_rows = load_labeled_rows(CHUNKS_LABELED_PATH)
+        paper_to_chunks = recover_supporting_chunks(
+            shortlist=shortlist,
+            labeled_rows=labeled_rows,
+            bom=available_bom,
+            top_chunks_per_paper=3,
+        )
+
+        print("Recovered supporting chunks:")
+        for node in shortlist:
+            source_path = node.metadata.get("source_path", "")
+            title = node.metadata.get("source_title", "")
+            n = len(paper_to_chunks.get(source_path, []))
+            print(f"{title}: {n} chunks")
+
+        cached_sci_evidence = {
+            "cards": [
+                {
+                    "source_title": node.metadata.get("source_title", ""),
+                    "doi": node.metadata.get("doi", ""),
+                    "source_path": node.metadata.get("source_path", ""),
+                    "text": node.text or "",
+                    "card_type": node.metadata.get("card_type", ""),
+                }
+                for node in shortlist
+            ],
+            "paper_to_chunks": paper_to_chunks,
+        }
+
+    # =====================================================
+    # ROUND 2+: reuse cached science evidence only
+    # =====================================================
+    else:
+        print("\nRAG2 is reusing cached science evidence pool.")
+        shortlist = cached_sci_evidence["cards"]
+        paper_to_chunks = cached_sci_evidence["paper_to_chunks"]
+
+    # =====================================================
+    # Build science card context
+    # =====================================================
+    science_blocks = []
+    reference_map = {}
+
+    for i, node in enumerate(shortlist, 1):
+        if isinstance(node, dict):
+            ref_id = f"SR{i}"
+            title = node.get("source_title", f"Science Paper {i}")
+            doi = node.get("doi", "")
+            text = node.get("text", "")
+            source_path = node.get("source_path", "")
+        else:
+            ref_id = f"SR{i}"
+            title = node.metadata.get("source_title", f"Science Paper {i}")
+            doi = node.metadata.get("doi", "")
+            text = node.text or ""
+            source_path = node.metadata.get("source_path", "")
+
+        reference_map[ref_id] = {
+            "title": title,
+            "doi": doi,
+            "source_path": source_path,
+        }
+
+        science_blocks.append(
+            f"""[Science Reference {ref_id}]
+Title: {title}
+DOI: {doi}
+
+{text}
+"""
+        )
+
+    science_card_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(science_blocks)
+
+    # =====================================================
+    # Build supporting chunk context
+    # =====================================================
+    chunk_blocks = []
+    chunk_idx = 1
+
+    source_path_to_ref_id = {
+        meta["source_path"]: ref_id
+        for ref_id, meta in reference_map.items()
+    }
+
+    for node in shortlist:
+        if isinstance(node, dict):
+            source_path = node.get("source_path", "")
+            title = node.get("source_title", "")
+        else:
+            source_path = node.metadata.get("source_path", "")
+            title = node.metadata.get("source_title", "")
+
+        ref_id = source_path_to_ref_id.get(source_path, "SRx")
+
+        for row in paper_to_chunks.get(source_path, []):
+            chunk_blocks.append(
+                f"""[Supporting Chunk {chunk_idx}]
+Reference ID: {ref_id}
+Title: {title}
+Chunk ID: {row.get('chunk_id')}
+Text:
+{row.get('text', '')}
+"""
+            )
+            chunk_idx += 1
+
+    supporting_chunk_context = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(chunk_blocks)
+
+    # =====================================================
+    # Build prompt
+    # =====================================================
+    rag2_prompt = build_rag2_prompt(
+        available_bom=available_bom,
+        rag1_proposal=rag1_proposal,
+        science_card_context=science_card_context,
+        supporting_chunk_context=supporting_chunk_context,
+    )
+
+    # =====================================================
+    # Generate advice
+    # =====================================================
+    raw_output = llm.complete(rag2_prompt, max_new_tokens=1200)
+
+    try:
+        json_text = extract_json_block(raw_output)
+        rag2_advice = json.loads(json_text)
+    except Exception as e:
+        rag2_advice = {
+            "bom_check": {
+                "status": "limited",
+                "reason": f"Model output could not be parsed as JSON: {str(e)}",
+                "literature_support": []
+            },
+            "limited_items": [
+                {
+                    "item": "RAG2 structured critique unavailable",
+                    "why_it_matters": "The feasibility critique could not be fully structured, so the next revision should stay conservative and BOM-bound.",
+                    "literature_support": []
+                }
+            ],
+            "narrowing_advice": [
+                {
+                    "advice": "Keep the current experiment core, reduce variables, and avoid adding any new equipment or measurements.",
+                    "why": "When RAG2 parsing fails, the safest fallback is to simplify rather than expand.",
+                    "literature_support": []
+                }
+            ],
+            "message_to_rag1": (
+                "RAG2 parsing failed. Keep the current experiment core, reduce variables, "
+                "avoid adding any non-BOM item, and prioritize only the simplest "
+                "BOM-supported measurements."
+            ),
+            "raw_message_to_rag1": raw_output.strip(),
+            "parse_failed": True,
+        }
+
+    
+
+    print("\n" + "=" * 100)
+    print("RAG2 ADVICE")
+    print("=" * 100)
+    print(json.dumps(rag2_advice, indent=2, ensure_ascii=False))
+
+    if save_output:
+        RAG2_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with RAG2_OUTPUT_PATH.open("w", encoding="utf-8") as f:
+            json.dump(rag2_advice, f, indent=2, ensure_ascii=False)
+        print(f"\nSaved RAG2 output to: {RAG2_OUTPUT_PATH}")
+
+    print("\nReference Map:")
+    for ref_id, meta in reference_map.items():
+        print(f"{ref_id}: {meta['title']} | DOI: {meta['doi']}")
+
+    return {
+        "rag2_advice": rag2_advice,
+        "cached_sci_evidence": cached_sci_evidence,
     }
 
 
-# =========================================================
-# Save advice only
-# =========================================================
-RAG2_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-with RAG2_OUTPUT_PATH.open("w", encoding="utf-8") as f:
-    json.dump(rag2_advice, f, indent=2, ensure_ascii=False)
-
-print("\n" + "=" * 100)
-print("RAG2 ADVICE")
-print("=" * 100)
-print(json.dumps(rag2_advice, indent=2, ensure_ascii=False))
-print(f"\nSaved RAG2 output to: {RAG2_OUTPUT_PATH}")
-
-
-# =========================================================
-# Optional: pretty print reference map for debugging
-# =========================================================
-print("\nReference Map:")
-for ref_id, meta in reference_map.items():
-    print(f"{ref_id}: {meta['title']} | DOI: {meta['doi']}")
+if __name__ == "__main__":
+    raise RuntimeError(
+        "scientific_advisor.py is now designed to be called from orchestrator via run_rag2(rag1_output)."
+    )
