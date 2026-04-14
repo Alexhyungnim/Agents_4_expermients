@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 from common import (
@@ -86,7 +87,12 @@ def main() -> None:
 
     dump_jsonl(out_path, rows)
     print(f"Saved {len(rows)} rule-first grading row(s) to {out_path}")
-    print(f"candidate_source={source_hint} candidates_path={candidates_path}")
+    print(
+        f"candidate_source={source_hint} "
+        f"tasks_covered={len({row['task_id'] for row in rows})} "
+        f"candidates_path={candidates_path}"
+    )
+    print(f"rule_hard_fail_counts={dict(Counter(bool(row['rule_hard_fail']) for row in rows))}")
 
 
 if __name__ == "__main__":

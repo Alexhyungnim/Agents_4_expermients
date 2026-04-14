@@ -397,3 +397,109 @@ python3.11 scripts/09_build_dpo_dataset.py
   - the generator always writes one acceptance-optimized baseline-safe candidate
   - the judge refuses obviously collapsed uniform local rubrics and falls back to structural scoring
 - This keeps the canonical candidate and judged schemas unchanged and stays compatible with `07c`, `07d`, `08`, and `09`.
+
+## Iteration 7
+
+### Goal
+
+Scale the local-only FT factory from one demo task to a small multi-task batch without changing schemas or breaking the current strong/weak dataset flow.
+
+### What changed
+
+- `exp_design_factory_next/scripts/04_build_tasks.py`
+  - replaced the single-placeholder builder with a task builder that supports:
+    - `--task-source auto|demo|chunks`
+    - `--max-tasks N`
+  - added a built-in additive-manufacturing demo batch so the local-only factory can generate multiple canonical tasks even when `data/processed/chunks/chunks.jsonl` is absent
+- `exp_design_factory_next/scripts/05d_generate_local_candidates.py`
+  - added `--max-tasks N`
+  - added `--replace-output`
+  - raised the default strong candidate count to `4` so each task gets:
+    - one baseline-safe strong row
+    - one feasible span variant
+    - two progressively weaker contrast variants
+- `exp_design_factory_next/scripts/06_generate_weak_rag.py`
+  - added `--max-tasks N`
+  - added `--replace-output`
+- `exp_design_factory_next/scripts/07c_rule_grade_candidates.py`
+  - now prints task coverage and rule-hard-fail counts for the current batch
+- `exp_design_factory_next/scripts/07d_local_judge_candidates.py`
+  - added `--replace-output`
+  - now prints task coverage and verdict counts for the current batch
+  - kept the existing collapsed-rubric trust filter and structural fallback behavior
+- `exp_design_factory_next/README.md`
+  - documented the new multi-task local-only run commands
+
+### Commands run
+
+```bash
+cd work_integration/exp_design_factory_next
+python3.11 scripts/04_build_tasks.py --task-source demo --max-tasks 4
+
+../.venv/bin/python scripts/05d_generate_local_candidates.py \
+  --max-tasks 4 \
+  --n-candidates-per-task 4 \
+  --replace-output
+
+python3.11 scripts/06_generate_weak_rag.py \
+  --max-tasks 4 \
+  --replace-output
+
+python3.11 scripts/07c_rule_grade_candidates.py
+python3.11 scripts/07c_rule_grade_candidates.py --candidate-source weak_baseline
+
+../.venv/bin/python scripts/07d_local_judge_candidates.py \
+  --replace-output \
+  --judge-model local_hf_qwen_batch
+
+../.venv/bin/python scripts/07d_local_judge_candidates.py \
+  --candidate-source weak_baseline \
+  --replace-output \
+  --judge-model local_hf_qwen_batch_weak \
+  --repair-attempts 0
+
+python3.11 scripts/08_build_sft_dataset.py
+python3.11 scripts/09_build_dpo_dataset.py
+```
+
+### Output counts from the 4-task batch
+
+- tasks:
+  - `4`
+- strong candidates:
+  - `16` rows
+  - `4` tasks
+- weak-baseline candidates:
+  - `4` rows
+  - `4` tasks
+- strong judged rows:
+  - `16`
+  - `accepted_silver = 8`
+  - `rejected = 8`
+- weak judged rows:
+  - `4`
+  - `weak_baseline = 4`
+- local-only bucket views:
+  - `accepted_silver_lite = 8`
+  - `rejected = 8`
+  - `weak_baseline = 4`
+- dataset builders:
+  - `data/processed/datasets/sft/train.jsonl`: `8` rows
+  - `data/processed/datasets/dpo/train.jsonl`: `8` rows
+
+### What happened
+
+- The new `04_build_tasks.py --task-source demo --max-tasks 4` created a small batch of canonical DED NiTi tasks that all fit the current local-only baseline-safe generator assumptions.
+- The strong generator preserved the safe-diversity pattern per task:
+  - one acceptance-optimized baseline-safe candidate
+  - several controlled contrast variants
+- The strong local judge again preferred the structural fallback across the full 4-task batch, but that fallback produced a stable and useful split instead of letting `accepted_silver` collapse to zero.
+- The weak-baseline path scaled cleanly with one weak row per task and preserved the canonical weak bucket semantics.
+- `08` and `09` remained compatible without code changes.
+
+### Remaining bottlenecks
+
+- The local judge is still the slowest part of the batch run, especially when it attempts raw judging before falling back structurally.
+- The current 4-task run still relied entirely on structural fallback for the strong judged rows:
+  - `judge_model = local_hf_qwen_batch_fallback` for all `16` strong rows
+- This is acceptable for the zero-cost batch factory, but the main throughput bottleneck is still local-judge latency rather than schema wiring or task generation.

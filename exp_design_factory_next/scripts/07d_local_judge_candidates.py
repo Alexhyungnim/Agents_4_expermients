@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 from common import (
@@ -128,6 +129,11 @@ def parse_args() -> argparse.Namespace:
         default=220,
         help="Maximum new tokens for each local repair attempt.",
     )
+    parser.add_argument(
+        "--replace-output",
+        action="store_true",
+        help="Replace the canonical judged JSONL for this candidate source instead of upserting into an existing file.",
+    )
     return parser.parse_args()
 
 
@@ -235,7 +241,7 @@ def main() -> None:
             )
             if looks_like_collapsed_local_judge_rubric(normalized):
                 raise ValueError(
-                    "Collapsed local judge rubric with score=1 across all dimensions."
+                    "Collapsed local judge rubric with a uniform extreme score across all dimensions."
                 )
 
             raw_total_score_1to5 = compute_raw_total_score_1to5(normalized["rubric"])
@@ -302,7 +308,7 @@ def main() -> None:
                     )
                     if looks_like_collapsed_local_judge_rubric(normalized):
                         raise ValueError(
-                            "Collapsed local judge rubric with score=1 across all dimensions."
+                            "Collapsed local judge rubric with a uniform extreme score across all dimensions."
                         )
 
                     raw_total_score_1to5 = compute_raw_total_score_1to5(normalized["rubric"])
@@ -380,6 +386,8 @@ def main() -> None:
     out_path = args.out_path or (
         weak_judged_path if source_hint == "weak_baseline" else strong_judged_path
     )
+    if args.replace_output and out_path.exists():
+        out_path.unlink()
     upsert_jsonl_rows(out_path, judged_rows, key_field="candidate_id")
     if source_hint == "weak_baseline":
         weak_judged_path = out_path
@@ -391,6 +399,7 @@ def main() -> None:
         key_field="candidate_id",
     )
     bucket_counts = materialize_local_bucket_views(bucket_rows, out_dir=args.bucket_dir)
+    verdict_counts = Counter(str(row.get("overall_verdict", "")) for row in judged_rows)
 
     print(f"Wrote {len(judged_rows)} judged row(s) to {out_path}")
     print(f"Materialized local-only bucket views under {args.bucket_dir}")
@@ -400,7 +409,12 @@ def main() -> None:
         f"rejected={bucket_counts['rejected']} "
         f"weak_baseline={bucket_counts['weak_baseline']}"
     )
-    print(f"candidate_source={source_hint} candidates_path={candidates_path}")
+    print(
+        f"candidate_source={source_hint} "
+        f"tasks_covered={len({row['task_id'] for row in judged_rows})} "
+        f"candidates_path={candidates_path}"
+    )
+    print(f"overall_verdict_counts={dict(verdict_counts)}")
     print(f"First-pass local judge JSON extractions: {initial_direct_rows}")
     print(f"First-pass malformed-output salvages: {initial_salvaged_rows}")
     if repaired_rows:

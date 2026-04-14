@@ -35,6 +35,17 @@ def parse_args() -> argparse.Namespace:
         help="Number of weak baseline variants to write per task.",
     )
     parser.add_argument(
+        "--max-tasks",
+        type=int,
+        default=None,
+        help="Optional cap on the number of task rows to process from tasks.jsonl.",
+    )
+    parser.add_argument(
+        "--replace-output",
+        action="store_true",
+        help="Replace the output JSONL instead of upserting into an existing file.",
+    )
+    parser.add_argument(
         "--generator-model",
         default="weak_rag_baseline",
         help="Generator model label to store in weak-baseline candidate rows.",
@@ -47,8 +58,12 @@ def main() -> None:
     tasks = [normalize_task_record(row) for row in load_jsonl(args.tasks_path)]
     if not tasks:
         raise SystemExit(f"No task rows found in {args.tasks_path}")
+    if args.max_tasks is not None and args.max_tasks < 1:
+        raise SystemExit("--max-tasks must be at least 1 when provided.")
     if args.n_candidates_per_task < 1:
         raise SystemExit("--n-candidates-per-task must be at least 1")
+    if args.max_tasks is not None:
+        tasks = tasks[: args.max_tasks]
 
     rows = []
     for task in tasks:
@@ -61,8 +76,14 @@ def main() -> None:
                 )
             )
 
+    if args.replace_output and args.out_path.exists():
+        args.out_path.unlink()
     upsert_jsonl_rows(args.out_path, rows, key_field="candidate_id")
     print(f"Wrote {len(rows)} weak-baseline candidate row(s) to {args.out_path}")
+    print(
+        f"tasks_processed={len(tasks)} "
+        f"n_candidates_per_task={args.n_candidates_per_task}"
+    )
 
 
 if __name__ == "__main__":

@@ -57,25 +57,33 @@ This path uses:
 - rule-first grading before local LLM judging
 - manual web judging only for a small calibration subset
 
+For a clean small-batch local-only run, build or refresh the task file first:
+
 ```bash
+python3.11 scripts/04_build_tasks.py --task-source demo --max-tasks 4
 python scripts/05c_import_rag_candidates.py --task-id YOUR_TASK_ID
-../.venv/bin/python scripts/05d_generate_local_candidates.py --n-candidates-per-task 3
-python scripts/06_generate_weak_rag.py
+../.venv/bin/python scripts/05d_generate_local_candidates.py --max-tasks 4 --n-candidates-per-task 4 --replace-output
+python scripts/06_generate_weak_rag.py --max-tasks 4 --replace-output
 python scripts/07c_rule_grade_candidates.py
-../.venv/bin/python scripts/07d_local_judge_candidates.py
+../.venv/bin/python scripts/07d_local_judge_candidates.py --replace-output
 python scripts/07c_rule_grade_candidates.py --candidate-source weak_baseline
-../.venv/bin/python scripts/07d_local_judge_candidates.py --candidate-source weak_baseline
+../.venv/bin/python scripts/07d_local_judge_candidates.py --candidate-source weak_baseline --replace-output
+python scripts/08_build_sft_dataset.py
+python scripts/09_build_dpo_dataset.py
 ```
 
 Notes:
+- `04_build_tasks.py` now supports `--task-source auto|demo|chunks` and `--max-tasks N`. In this worktree, `--task-source demo` is the easiest zero-cost way to create a small multi-task batch.
 - `05c_import_rag_candidates.py` reads `../outputs/rag1_latest_output.json` and `../outputs/rag2_advice.json` by default and converts them into canonical candidate rows.
 - When imported `rag1/rag2` outputs do not carry exact FT `evidence_chunk_ids`, the importer falls back to the matched task's `evidence_chunk_ids` so rule-first grading does not treat them as a false evidence mismatch.
 - `05d_generate_local_candidates.py` appends local-model candidates into the same canonical `candidates.jsonl`.
+- `05d_generate_local_candidates.py` and `06_generate_weak_rag.py` support `--max-tasks N` and `--replace-output`, which makes it easy to rerun a clean batch without manually deleting old rows.
 - `05d_generate_local_candidates.py` now protects `candidate_rank = 1` as a conservative baseline-safe candidate with explicit numeric factor levels, listed resources only, strong controls, clear measurements, and task evidence alignment.
-- `05d_generate_local_candidates.py` derives `candidate_rank >= 2` as controlled contrast variants from that protected baseline instead of asking the local LLM to freestyle every variant from scratch.
+- `05d_generate_local_candidates.py` derives `candidate_rank >= 2` as controlled contrast variants from that protected baseline instead of asking the local LLM to freestyle every variant from scratch. With the current defaults, each task gets one baseline-safe strong row plus three contrast rows.
 - `07c_rule_grade_candidates.py` tags rule-based failures before any local LLM judging.
 - `06_generate_weak_rag.py` now writes deterministic canonical `weak_baseline` candidate rows directly into `data/processed/candidates/weak_rag_candidates.jsonl`.
 - `07d_local_judge_candidates.py` writes canonical judged rows for both strong and weak sources and also materializes local-only bucket views under `data/processed/judged/local_only_buckets/` from the canonical strong and weak judged files together.
+- `07d_local_judge_candidates.py` supports `--replace-output`, which makes batch reruns safer when you want the judged JSONL to match only the current task batch.
 - `07d_local_judge_candidates.py` now uses a compact local-only judge prompt that asks for integer-only rubric scores, attempts one small local repair pass for malformed JSON, and keeps the structural fallback as a safety net.
 - `07d_local_judge_candidates.py` treats uniform extreme local rubrics like all-`1` or all-`5` as collapsed low-trust outputs and falls back to structural judging instead of trusting them.
 - For `weak_baseline`, the local judge path now canonicalizes contradictory or missing summaries so weak rows read consistently even when the raw local model text is noisy.
