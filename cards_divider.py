@@ -13,6 +13,7 @@ from llama_index.core import Document, VectorStoreIndex, Settings
 from llama_index.embeddings.langchain import LangchainEmbedding
 from langchain_huggingface import HuggingFaceEmbeddings
 
+
 # =========================================================
 # Local Qwen LLM (no Ollama)
 # =========================================================
@@ -37,7 +38,7 @@ class LocalQwenLLM:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
     def complete(self, prompt: str, max_new_tokens: int = 512) -> str:
-        inputs = self.tokenizer(prompt, return_tensors="pt")
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
         with torch.no_grad():
@@ -112,8 +113,6 @@ SCIENCE_KEYWORDS = [
     "property relationship",
     "microstructure-property relationship",
     "causal factor",
-
-    # softer / more realistic science phrasing
     "attributed to",
     "due to the",
     "because of",
@@ -163,11 +162,10 @@ EXPERIMENT_CARD_TEMPLATE = {
 }
 
 SCIENCE_CARD_TEMPLATE = {
-    "dominant_mechanisms": [],
-    "microstructure_terms": [],
-    "property_relations": [],
-    "causal_factors": [],
-    "science_hypotheses": [],
+    "scientific_reasoning": "",
+    "key_variables": [],
+    "observed_trends": [],
+    "scientific_hypotheses": [],
     "literature_science_summary": "",
 }
 
@@ -179,25 +177,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build paper-level experiment/science cards from existing chunks.jsonl"
     )
-    parser.add_argument(
-        "--chunks-path",
-        type=Path,
-        default=Path("outputs/chunks.jsonl"),
-    )
-    parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=Path("outputs"),
-    )
-    parser.add_argument(
-        "--model-name",
-        default="Qwen/Qwen3-8B",
-    )
-    parser.add_argument(
-        "--max-chunks-per-card",
-        type=int,
-        default=8,
-    )
+    parser.add_argument("--chunks-path", type=Path, default=Path("outputs/chunks.jsonl"))
+    parser.add_argument("--out-dir", type=Path, default=Path("outputs"))
+    parser.add_argument("--model-name", default="Qwen/Qwen3-8B")
+    parser.add_argument("--max-chunks-per-card", type=int, default=4)
     return parser.parse_args()
 
 
@@ -252,7 +235,7 @@ def extract_json_object(text: str) -> dict[str, Any]:
     if start == -1:
         raise ValueError("No JSON object found in model output.")
 
-    obj, end = decoder.raw_decode(text[start:])
+    obj, _ = decoder.raw_decode(text[start:])
     if not isinstance(obj, dict):
         raise ValueError("Parsed JSON is not an object.")
     return obj
@@ -268,8 +251,14 @@ def normalize_list_field(v: Any) -> list[str]:
     return [str(v).strip()]
 
 
-def retry_json_prompt(llm: LocalQwenLLM, prompt: str, max_attempts: int = 2, max_new_tokens: int = 512) -> dict[str, Any]:
+def retry_json_prompt(
+    llm: LocalQwenLLM,
+    prompt: str,
+    max_attempts: int = 3,
+    max_new_tokens: int = 512,
+) -> dict[str, Any]:
     last_error = None
+    last_raw_text = ""
 
     for attempt in range(max_attempts):
         final_prompt = prompt
@@ -281,11 +270,13 @@ def retry_json_prompt(llm: LocalQwenLLM, prompt: str, max_attempts: int = 2, max
 
         try:
             raw_text = llm.complete(final_prompt, max_new_tokens=max_new_tokens)
+            last_raw_text = raw_text
             return extract_json_object(raw_text)
         except Exception as exc:
             last_error = exc
 
-    raise ValueError(f"Failed to parse JSON: {last_error}")
+    raise ValueError(f"Failed to parse JSON: {last_error}\nRAW:\n{last_raw_text[:1200]}")
+    
 
 
 # =========================================================
@@ -338,7 +329,7 @@ science_score = {sci_score}
 
 Chunk:
 \"\"\"
-{text}
+{text[:1800]}
 \"\"\"
 
 Return ONLY valid JSON:
@@ -385,10 +376,19 @@ def annotate_chunks(documents: list[Document], llm: LocalQwenLLM) -> None:
             try:
                 cls = classify_chunk_type(llm, text, exp_score, sci_score)
             except Exception as e:
+                if exp_score >= 4 and sci_score >= 4:
+                    fallback_label = "both"
+                elif exp_score > sci_score and exp_score >= 3:
+                    fallback_label = "experiment"
+                elif sci_score > exp_score and sci_score >= 3:
+                    fallback_label = "science"
+                else:
+                    fallback_label = "neither"
+
                 cls = {
-                    "label": "neither",
-                    "confidence": 0.0,
-                    "reason": f"classification_failed: {str(e)}",
+                    "label": fallback_label,
+                    "confidence": 0.35,
+                    "reason": f"classification_failed_fallback: {str(e)}",
                 }
 
         d.metadata["chunk_label"] = cls["label"]
@@ -402,18 +402,116 @@ def annotate_chunks(documents: list[Document], llm: LocalQwenLLM) -> None:
             f"label={cls['label']} conf={cls['confidence']:.2f} "
             f"exp_score={exp_score} sci_score={sci_score}"
         )
+def retry_json_prompt_prefill(
+    llm: LocalQwenLLM,
+    prompt: str,
+    max_attempts: int = 3,
+    max_new_tokens: int = 512,
+) -> dict[str, Any]:
+    last_error = None
+    last_raw_text = ""
+
+    for attempt in range(max_attempts):
+        final_prompt = prompt
+        if attempt > 0:
+            final_prompt += "\nReturn ONLY JSON."
+
+        try:
+            # 모델이 설명부터 시작하지 못하게 아예 { 로 시작시킴
+            raw_text = "{" + llm.complete(final_prompt + "\n\nJSON:\n{", max_new_tokens=max_new_tokens)
+            last_raw_text = raw_text
+            return extract_json_object(raw_text)
+        except Exception as exc:
+            last_error = exc
+
+    raise ValueError(f"Failed to parse JSON: {last_error}\nRAW:\n{last_raw_text[:1200]}")
+
+def _extract_partial_json_fields(raw_text: str, template: dict[str, Any]) -> dict[str, Any]:
+    """
+    Salvage whatever fields are already present in a truncated JSON-like string.
+    Works best when the model produced valid keys but got cut off near the end.
+    """
+    out: dict[str, Any] = {}
+
+    for key, default in template.items():
+        key_pat = re.escape(f'"{key}"')
+
+        if isinstance(default, list):
+            # capture list content until the first closing ] if present
+            m = re.search(key_pat + r'\s*:\s*\[(.*?)\]', raw_text, flags=re.DOTALL)
+            if m:
+                body = m.group(1)
+                items = re.findall(r'"([^"\n]+)"', body)
+                out[key] = [x.strip() for x in items if x.strip()]
+            else:
+                # salvage partially written list items even if ] is missing
+                m2 = re.search(key_pat + r'\s*:\s*\[(.*?)(?:,\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:|$)', raw_text, flags=re.DOTALL)
+                if m2:
+                    body = m2.group(1)
+                    items = re.findall(r'"([^"\n]+)"', body)
+                    out[key] = [x.strip() for x in items if x.strip()]
+
+        else:
+            # normal full string
+            m = re.search(key_pat + r'\s*:\s*"([^"]*)"', raw_text, flags=re.DOTALL)
+            if m:
+                out[key] = m.group(1).strip()
+            else:
+                # salvage truncated string until next field or end
+                m2 = re.search(key_pat + r'\s*:\s*"(.*?)(?:,\s*"[A-Za-z_][A-Za-z0-9_]*"\s*:|$)', raw_text, flags=re.DOTALL)
+                if m2:
+                    val = m2.group(1).strip()
+                    val = val.rstrip(',').rstrip('}').rstrip(']').strip()
+                    out[key] = val
+
+    return out
+
+
+def _generate_card_with_salvage(
+    llm: LocalQwenLLM,
+    prompt: str,
+    template: dict[str, Any],
+    max_new_tokens: int,
+) -> dict[str, Any]:
+    """
+    1) Try strict JSON parse first
+    2) If parse fails, salvage already-generated fields from raw text
+    """
+    try:
+        card = retry_json_prompt_prefill(
+            llm,
+            prompt,
+            max_attempts=3,
+            max_new_tokens=max_new_tokens,
+        )
+        return sanitize_card(card, template)
+
+    except Exception as e:
+        msg = str(e)
+        raw_text = ""
+        raw_pos = msg.find("RAW:\n")
+        if raw_pos != -1:
+            raw_text = msg[raw_pos + len("RAW:\n"):]
+
+        salvaged = _extract_partial_json_fields(raw_text, template)
+        salvaged = sanitize_card(salvaged, template)
+
+        if card_has_real_content(salvaged):
+            print("    salvage=PARTIAL_JSON_RECOVERED")
+            return salvaged
+
+        raise
 
 
 # =========================================================
 # Card generation
 # =========================================================
-def build_evidence_text(chunks: list[Document], max_chunks: int = 8) -> str:
+def build_evidence_text(chunks: list[Document], max_chunks: int = 4, max_chars_per_chunk: int = 1200) -> str:
     ranked = sorted(
         chunks,
         key=lambda d: (
             d.metadata.get("chunk_confidence", 0),
             d.metadata.get("experiment_score", 0) + d.metadata.get("science_score", 0),
-            d.metadata.get("char_length", 0),
         ),
         reverse=True,
     )
@@ -422,6 +520,10 @@ def build_evidence_text(chunks: list[Document], max_chunks: int = 8) -> str:
     blocks = []
 
     for i, d in enumerate(selected, 1):
+        text = (d.text or "").strip()
+        if len(text) > max_chars_per_chunk:
+            text = text[:max_chars_per_chunk] + " ..."
+
         blocks.append(
             f"""[Evidence Chunk {i}]
 Title: {d.metadata.get("title", "")}
@@ -432,11 +534,11 @@ Chunk Start: {d.metadata.get("chunk_start")}
 Chunk ID: {d.metadata.get("chunk_id")}
 
 Text:
-{d.text}
-"""
+{text}"""
         )
 
-    return "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(blocks)
+    return "\n\n".join(blocks)
+
 
 def card_has_real_content(card: dict[str, Any]) -> bool:
     for v in card.values():
@@ -447,14 +549,36 @@ def card_has_real_content(card: dict[str, Any]) -> bool:
     return False
 
 
-def build_experiment_card(llm: LocalQwenLLM, chunks: list[Document], max_chunks: int = 8) -> dict[str, Any]:
-    evidence_text = build_evidence_text(chunks, max_chunks=max_chunks)
+def sanitize_card(card: dict[str, Any], template: dict[str, Any]) -> dict[str, Any]:
+    out = template.copy()
+
+    for k in out:
+        if k in card:
+            out[k] = card[k]
+
+    for k in out:
+        if isinstance(template[k], list):
+            out[k] = normalize_list_field(out[k])
+        else:
+            out[k] = str(out[k]).strip()
+
+    return out
+
+
+def build_experiment_card(llm: LocalQwenLLM, chunks: list[Document], max_chunks: int = 4) -> dict[str, Any]:
+    evidence_text = build_evidence_text(
+        chunks,
+        max_chunks=max_chunks,
+        max_chars_per_chunk=800,
+    )
 
     prompt = f"""
 You are creating ONE experiment card for ONE welding paper.
 
 Use ONLY the evidence below.
 Do not invent facts.
+If a field is not supported by the evidence, leave it empty.
+Keep lists concise and short.
 
 Evidence:
 {evidence_text}
@@ -468,67 +592,55 @@ Return ONLY valid JSON:
   "consumables": [],
   "controllable_parameters": [],
   "measurements_outputs": [],
+  "joint_or_sample_types": [],
+  "weldability_quality_factors": [],
+  "common_constraints": [],
   "literature_experiment_summary": ""
 }}
 """
-    try:
-        card = retry_json_prompt(llm, prompt, max_attempts=2, max_new_tokens=320)
-    except Exception:
-        card = {}
-
-    out = EXPERIMENT_CARD_TEMPLATE.copy()
-    for k in out:
-        if k in card:
-            out[k] = card[k]
-
-    for k in out:
-        if isinstance(EXPERIMENT_CARD_TEMPLATE[k], list):
-            out[k] = normalize_list_field(out[k])
-        else:
-            out[k] = str(out[k]).strip()
-
-    return out
+    return _generate_card_with_salvage(
+        llm=llm,
+        prompt=prompt,
+        template=EXPERIMENT_CARD_TEMPLATE,
+        max_new_tokens=384,
+    )
 
 
-def build_science_card(llm: LocalQwenLLM, chunks: list[Document], max_chunks: int = 8) -> dict[str, Any]:
-    evidence_text = build_evidence_text(chunks, max_chunks=max_chunks)
+def build_science_card(llm: LocalQwenLLM, chunks: list[Document], max_chunks: int = 4) -> dict[str, Any]:
+    evidence_text = build_evidence_text(
+        chunks,
+        max_chunks=max_chunks,
+        max_chars_per_chunk=600,
+    )
 
     prompt = f"""
 You are creating ONE science card for ONE welding paper.
 
 Use ONLY the evidence below.
 Do not invent facts.
+If a field is not supported by the evidence, leave it empty.
+Keep scientific_reasoning under 80 words.
+Keep each list to at most 5 short items.
+Use short phrases, not long sentences.
 
 Evidence:
 {evidence_text}
 
 Return ONLY valid JSON:
 {{
-  "dominant_mechanisms": [],
-  "microstructure_terms": [],
-  "property_relations": [],
-  "causal_factors": [],
-  "science_hypotheses": [],
+  "scientific_reasoning": "",
+  "key_variables": [],
+  "observed_trends": [],
+  "scientific_hypotheses": [],
   "literature_science_summary": ""
 }}
 """
-    try:
-        card = retry_json_prompt(llm, prompt, max_attempts=2, max_new_tokens=320)
-    except Exception:
-        card = {}
-
-    out = SCIENCE_CARD_TEMPLATE.copy()
-    for k in out:
-        if k in card:
-            out[k] = card[k]
-
-    for k in out:
-        if isinstance(SCIENCE_CARD_TEMPLATE[k], list):
-            out[k] = normalize_list_field(out[k])
-        else:
-            out[k] = str(out[k]).strip()
-
-    return out
+    return _generate_card_with_salvage(
+        llm=llm,
+        prompt=prompt,
+        template=SCIENCE_CARD_TEMPLATE,
+        max_new_tokens=512,
+    )
 
 
 # =========================================================
@@ -571,11 +683,12 @@ Source Title: {title}
 DOI: {doi}
 Card Type: science
 
-Dominant Mechanisms: {", ".join(card["dominant_mechanisms"])}
-Microstructure Terms: {", ".join(card["microstructure_terms"])}
-Property Relations: {", ".join(card["property_relations"])}
-Causal Factors: {", ".join(card["causal_factors"])}
-Science Hypotheses: {", ".join(card["science_hypotheses"])}
+Scientific Reasoning:
+{card["scientific_reasoning"]}
+
+Key Variables: {", ".join(card["key_variables"])}
+Observed Trends: {", ".join(card["observed_trends"])}
+Scientific Hypotheses: {", ".join(card["scientific_hypotheses"])}
 
 Literature Science Summary:
 {card["literature_science_summary"]}
@@ -591,7 +704,13 @@ Literature Science Summary:
     )
 
 
-def build_paper_memory_cards(documents: list[Document], llm: LocalQwenLLM, out_dir: Path, max_chunks: int = 8) -> list[dict[str, Any]]:
+def build_paper_memory_cards(
+    documents: list[Document],
+    llm: LocalQwenLLM,
+    out_dir: Path,
+    max_chunks: int = 4,
+    build_index: bool = True,
+) -> list[dict[str, Any]]:
     paper_groups: dict[tuple[str, str, str], list[Document]] = defaultdict(list)
 
     for d in documents:
@@ -603,10 +722,16 @@ def build_paper_memory_cards(documents: list[Document], llm: LocalQwenLLM, out_d
         paper_groups[key].append(d)
 
     outputs = []
-    card_docs = []
+    card_docs = [] if build_index else None
+
+    cards_path = out_dir / "paper_memory_cards.jsonl"
+
+    # 새 실행 시작할 때 파일 초기화
+    with cards_path.open("w", encoding="utf-8") as f:
+        pass
 
     for idx, ((source_path, title, doi), chunk_docs) in enumerate(paper_groups.items(), start=1):
-        print(f"[Paper {idx}/{len(paper_groups)}] {title}")
+        print(f"\n[Paper {idx}/{len(paper_groups)}] {title}")
 
         exp_chunks = []
         sci_chunks = []
@@ -618,6 +743,10 @@ def build_paper_memory_cards(documents: list[Document], llm: LocalQwenLLM, out_d
             if label in {"science", "both"}:
                 sci_chunks.append(d)
 
+        print(f"  total_chunks={len(chunk_docs)}")
+        print(f"  exp_candidate_chunks={len(exp_chunks)}")
+        print(f"  sci_candidate_chunks={len(sci_chunks)}")
+
         row = {
             "source_path": source_path,
             "source_title": title,
@@ -625,29 +754,74 @@ def build_paper_memory_cards(documents: list[Document], llm: LocalQwenLLM, out_d
         }
 
         if exp_chunks:
-            exp_card = build_experiment_card(llm, exp_chunks, max_chunks=max_chunks)
-            if card_has_real_content(exp_card):
-                row["experiment_card"] = exp_card
-                card_docs.append(experiment_card_to_doc(title, doi, exp_card))
+            try:
+                exp_card = build_experiment_card(llm, exp_chunks, max_chunks=max_chunks)
+                if card_has_real_content(exp_card):
+                    row["experiment_card"] = exp_card
+                    if build_index:
+                        card_docs.append(experiment_card_to_doc(title, doi, exp_card))
+                    print("  experiment_card=CREATED")
+
+                    preview = (
+                        exp_card.get("literature_experiment_summary", "")[:200]
+                        .replace("\n", " ")
+                        .strip()
+                    )
+                    print(f"    preview={preview}")
+                else:
+                    print("  experiment_card=EMPTY")
+            except Exception as e:
+                row["experiment_card_error"] = str(e)
+                print(f"  experiment_card=ERROR: {e}")
+        else:
+            print("  experiment_card=SKIPPED (no experiment/both chunks)")
 
         if sci_chunks:
-            sci_card = build_science_card(llm, sci_chunks, max_chunks=max_chunks)
-            if card_has_real_content(sci_card):
-                row["science_card"] = sci_card
-                card_docs.append(science_card_to_doc(title, doi, sci_card))
+            try:
+                sci_card = build_science_card(llm, sci_chunks, max_chunks=max_chunks)
+                if card_has_real_content(sci_card):
+                    row["science_card"] = sci_card
+                    if build_index:
+                        card_docs.append(science_card_to_doc(title, doi, sci_card))
+                    print("  science_card=CREATED")
 
-        if "experiment_card" in row or "science_card" in row:
+                    preview = (
+                        sci_card.get("literature_science_summary", "")[:200]
+                        .replace("\n", " ")
+                        .strip()
+                    )
+                    print(f"    preview={preview}")
+                else:
+                    print("  science_card=EMPTY")
+            except Exception as e:
+                row["science_card_error"] = str(e)
+                print(f"  science_card=ERROR: {e}")
+        else:
+            print("  science_card=SKIPPED (no science/both chunks)")
+
+        if (
+            "experiment_card" in row
+            or "science_card" in row
+            or "experiment_card_error" in row
+            or "science_card_error" in row
+        ):
             outputs.append(row)
 
-    cards_path = out_dir / "paper_memory_cards.jsonl"
-    write_jsonl(cards_path, outputs)
+            # paper 하나 끝날 때마다 바로 append 저장
+            with cards_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    if card_docs:
+            print("  row=SAVED")
+        else:
+            print("  row=NOT_SAVED")
+
+    print(f"\nSaved {len(outputs)} paper memory cards to {cards_path}")
+
+    if build_index and card_docs:
         index = VectorStoreIndex.from_documents(card_docs, show_progress=True)
         index.storage_context.persist(persist_dir=str(out_dir / "paper_memory_storage"))
+        print(f"Persisted vector store to {out_dir / 'paper_memory_storage'}")
 
-    print(f"Saved {len(outputs)} paper memory cards to {cards_path}")
-    print(f"Persisted vector store to {out_dir / 'paper_memory_storage'}")
     return outputs
 
 
@@ -668,13 +842,14 @@ def main() -> None:
         raise SystemExit("No documents loaded from chunks.jsonl")
 
     llm = LocalQwenLLM(model_name=args.model_name)
+
     Settings.embed_model = LangchainEmbedding(
-    HuggingFaceEmbeddings(
-        model_name="BAAI/bge-small-en-v1.5",
-        model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
+        HuggingFaceEmbeddings(
+            model_name="BAAI/bge-small-en-v1.5",
+            model_kwargs={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
     )
-)
 
     annotate_chunks(documents, llm)
 
