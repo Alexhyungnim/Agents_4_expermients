@@ -909,6 +909,19 @@ def _parse_first_int(text: str) -> int | None:
     return int(match.group(0))
 
 
+def _split_variable_phrase(text: str) -> list[str]:
+    cleaned = str(text or "").strip(" .")
+    if not cleaned:
+        return []
+
+    parts = [
+        part.strip(" .")
+        for part in re.split(r"\s*(?:,| and )\s*", cleaned)
+        if part.strip(" .")
+    ]
+    return parts or [cleaned]
+
+
 def _infer_task_variables(goal: str) -> tuple[list[str], list[str]]:
     text = str(goal or "").strip()
     if not text:
@@ -922,7 +935,7 @@ def _infer_task_variables(goal: str) -> tuple[list[str], list[str]]:
     for pattern in patterns:
         match = pattern.search(text)
         if match:
-            return [match.group("iv").strip(" .")], [match.group("dv").strip(" .")]
+            return _split_variable_phrase(match.group("iv")), _split_variable_phrase(match.group("dv"))
     return [], []
 
 
@@ -938,6 +951,32 @@ def _match_allowed_items(items: list[str], allowed_items: list[str]) -> list[str
 
 def _conditions_have_explicit_numbers(conditions: list[str]) -> bool:
     return bool(conditions) and all(re.search(r"\d", condition) for condition in conditions)
+
+
+def detect_measurement_mode(
+    task: dict[str, Any],
+    dependent_variables: list[str],
+) -> str:
+    resources = task.get("available_resources", {})
+    equipment = normalize_string_list(resources.get("equipment", []))
+    dv_text = " ; ".join(dependent_variables).lower()
+    equipment_lower = {item.lower() for item in equipment}
+
+    if "roughness" in dv_text or "profilometer" in " ".join(equipment_lower):
+        return "profilometry"
+    if "density" in dv_text or ("archimedes density kit" in equipment_lower and "analytical balance" in equipment_lower):
+        return "density"
+    if "hardness" in dv_text or "microhardness" in dv_text or "microhardness tester" in equipment_lower:
+        return "microhardness"
+    if any(keyword in dv_text for keyword in ["phase", "austenite", "martensite"]) or "xrd" in equipment_lower:
+        return "xrd_phase"
+    if any(keyword in dv_text for keyword in ["width", "height", "track", "bead"]) and (
+        "optical microscope" in equipment_lower or "digital calipers" in equipment_lower
+    ):
+        return "geometry"
+    if any(keyword in dv_text for keyword in ["porosity", "crack", "lack-of-fusion", "fusion"]) or "sem" in equipment_lower:
+        return "sem_imaging"
+    return "generic"
 
 
 def build_explicit_numeric_condition_levels(
@@ -971,34 +1010,262 @@ def build_explicit_numeric_condition_levels(
     ]
 
 
-def _build_safe_baseline_resources(task: dict[str, Any]) -> list[str]:
+def _pick_first_matching(items: list[str], needles: list[str]) -> list[str]:
+    matches: list[str] = []
+    lowered = [(item, item.lower()) for item in items]
+    for needle in needles:
+        for original, lowered_item in lowered:
+            if needle in lowered_item:
+                matches.append(original)
+                break
+    return _merge_unique_strings(matches)
+
+
+def _build_safe_baseline_resources(task: dict[str, Any], *, measurement_mode: str) -> list[str]:
     resources = task.get("available_resources", {})
     equipment = normalize_string_list(resources.get("equipment", []))
     materials = normalize_string_list(resources.get("materials", []))
-
-    preferred_equipment = _merge_unique_strings(
-        [
-            next((item for item in equipment if item.lower() == "ded machine"), ""),
-            next((item for item in equipment if item.lower() == "sem"), ""),
-            next((item for item in equipment if "precision saw" in item.lower()), ""),
-            next((item for item in equipment if "mounting press" in item.lower()), ""),
-            next((item for item in equipment if "polishing" in item.lower()), ""),
-        ]
+    mode_equipment_map = {
+        "sem_imaging": ["ded machine", "sem", "precision saw", "mounting press", "polishing"],
+        "geometry": ["ded machine", "optical microscope", "digital calipers"],
+        "xrd_phase": ["ded machine", "vacuum furnace", "xrd"],
+        "microhardness": ["ded machine", "microhardness tester", "precision saw", "mounting press", "polishing"],
+        "density": ["ded machine", "analytical balance", "archimedes density kit"],
+        "profilometry": ["ded machine", "optical profilometer"],
+        "generic": ["ded machine"],
+    }
+    preferred_equipment = _pick_first_matching(
+        equipment,
+        mode_equipment_map.get(measurement_mode, mode_equipment_map["generic"]),
     )
     if not preferred_equipment:
         preferred_equipment = equipment[:4]
 
-    preferred_materials = _merge_unique_strings(
-        [
-            next((item for item in materials if "powder" in item.lower()), ""),
-            next((item for item in materials if "argon" in item.lower()), ""),
-            next((item for item in materials if "resin" in item.lower()), ""),
-        ]
-    )
+    material_needles = ["powder", "argon", "resin"]
+    if measurement_mode == "density":
+        material_needles.append("ethanol")
+    preferred_materials = _pick_first_matching(materials, material_needles)
     if not preferred_materials:
         preferred_materials = materials[:3]
 
     return _merge_unique_strings(preferred_equipment + preferred_materials)
+
+
+def build_task_specific_baseline_plan(
+    task: dict[str, Any],
+    *,
+    independent_variables: list[str],
+    dependent_variables: list[str],
+) -> dict[str, Any]:
+    resources = task.get("available_resources", {})
+    equipment = normalize_string_list(resources.get("equipment", []))
+    equipment_lower = {item.lower() for item in equipment}
+    iv = (independent_variables or ["main process setting"])[0]
+    dv_text = " and ".join(dependent_variables or ["main response"])
+    iv_lower = iv.lower()
+    measurement_mode = detect_measurement_mode(task, dependent_variables)
+    relevant_resources = _build_safe_baseline_resources(task, measurement_mode=measurement_mode)
+
+    if "vacuum furnace" in equipment_lower and "temperature" in iv_lower:
+        first_step = (
+            f"Produce one fixed baseline set of DED NiTi coupons, then apply each explicit numeric {iv_lower} condition in the vacuum furnace."
+        )
+        fixed_step = "Keep the as-built coupon geometry and baseline DED settings unchanged before heat treatment."
+    else:
+        first_step = (
+            f"Run one DED coupon at each explicit numeric {iv_lower} condition within the validated stable operating window."
+        )
+        fixed_step = f"Keep all non-{iv_lower} process settings fixed across the full screening run."
+
+    controls = [fixed_step]
+    procedure_outline = [first_step]
+    measurement_plan: list[str] = [f"Record the exact numeric {iv_lower} level and replicate identifier for every sample."]
+    analysis_plan: list[str] = []
+    feasibility_checks = ["Uses only listed equipment and materials."]
+
+    if measurement_mode == "sem_imaging":
+        controls.extend(
+            [
+                "Use the same powder lot, argon shielding setup, and sample geometry for every run.",
+                "Prepare every sample with the same sectioning, mounting, grinding, and polishing workflow before SEM imaging.",
+            ]
+        )
+        procedure_outline.extend(
+            [
+                "Section each build with the precision saw, then mount, grind, and polish for cross-section imaging.",
+                f"Acquire SEM cross-sections for every replicate and measure {dv_text.lower()} from the prepared sections.",
+            ]
+        )
+        measurement_plan.extend(
+            [
+                f"Quantify {dv_text.lower()} from SEM cross-sections using one consistent image-analysis workflow.",
+                f"Summarize {dv_text.lower()} by condition before comparing the screened settings.",
+            ]
+        )
+        analysis_plan.extend(
+            [
+                f"Compute the mean and spread of {dv_text.lower()} for each numeric {iv_lower} level.",
+                f"Plot {dv_text.lower()} versus {iv_lower} to check for a monotonic or non-linear trend.",
+            ]
+        )
+        feasibility_checks.append("Uses SEM-based imaging with the listed metallography tools.")
+    elif measurement_mode == "geometry":
+        controls.extend(
+            [
+                "Use the same powder lot, argon shielding setup, and coupon geometry for every run.",
+                "Measure every coupon with the same optical-microscopy setup and caliper workflow.",
+            ]
+        )
+        procedure_outline.extend(
+            [
+                "Measure track width from optical micrographs after each run.",
+                "Measure build height from the same coupons with digital calipers.",
+            ]
+        )
+        measurement_plan.extend(
+            [
+                "Capture optical images for track-width measurement at the same magnification for every coupon.",
+                "Record build height with digital calipers for every replicate.",
+                f"Summarize {dv_text.lower()} by condition before comparing the screened settings.",
+            ]
+        )
+        analysis_plan.extend(
+            [
+                f"Compare the paired geometric responses across the numeric {iv_lower} levels.",
+                "Identify whether the same setting range improves both responses or creates a tradeoff.",
+            ]
+        )
+        feasibility_checks.append("Uses optical microscopy and caliper measurements only.")
+    elif measurement_mode == "xrd_phase":
+        controls.extend(
+            [
+                "Use coupons built with one fixed baseline DED setting set before heat treatment.",
+                "Use the same XRD scan setup and specimen preparation workflow for every condition.",
+            ]
+        )
+        procedure_outline.extend(
+            [
+                "Heat treat coupons at each explicit numeric temperature condition in the vacuum furnace.",
+                f"Run XRD on every condition and quantify {dv_text.lower()} from the diffraction data.",
+            ]
+        )
+        measurement_plan.extend(
+            [
+                "Collect XRD scans with one fixed scan range and step condition for every sample.",
+                f"Estimate {dv_text.lower()} with one consistent peak-based analysis workflow.",
+            ]
+        )
+        analysis_plan.extend(
+            [
+                f"Compare the estimated {dv_text.lower()} across the temperature conditions.",
+                "Use the first-pass result to identify whether a narrower temperature window is worth testing next.",
+            ]
+        )
+        feasibility_checks.append("Uses only the listed vacuum furnace and XRD workflow.")
+    elif measurement_mode == "microhardness":
+        controls.extend(
+            [
+                "Use the same powder lot, shielding setup, and coupon geometry for every run.",
+                "Prepare every cross-section with the same metallography workflow before hardness testing.",
+            ]
+        )
+        procedure_outline.extend(
+            [
+                "Section, mount, grind, and polish each coupon after deposition.",
+                f"Measure {dv_text.lower()} on every prepared sample with the microhardness tester.",
+            ]
+        )
+        measurement_plan.extend(
+            [
+                "Use the same indentation load and spacing for every hardness map.",
+                f"Summarize {dv_text.lower()} by condition before comparing the screened settings.",
+            ]
+        )
+        analysis_plan.extend(
+            [
+                f"Compute the mean and spread of {dv_text.lower()} for each numeric {iv_lower} level.",
+                "Look for the smallest setting change that produces a stable directional shift in hardness.",
+            ]
+        )
+        feasibility_checks.append("Uses only the listed hardness and sample-preparation tools.")
+    elif measurement_mode == "density":
+        controls.extend(
+            [
+                "Use the same powder lot, shielding setup, and coupon geometry for every run.",
+                "Use one Archimedes setup and fluid handling workflow for every density measurement.",
+            ]
+        )
+        procedure_outline.extend(
+            [
+                "Produce coupons at each explicit numeric condition inside the stable deposition window.",
+                f"Measure {dv_text.lower()} for every coupon with the analytical balance and Archimedes density kit.",
+            ]
+        )
+        measurement_plan.extend(
+            [
+                "Measure dry and immersed mass for every replicate with the same balance and density-kit setup.",
+                f"Convert the raw measurements into {dv_text.lower()} with one consistent calculation sheet.",
+            ]
+        )
+        analysis_plan.extend(
+            [
+                f"Compare the mean {dv_text.lower()} across the screened settings.",
+                "Flag any condition that improves density without immediately widening the experimental scope.",
+            ]
+        )
+        feasibility_checks.append("Uses only the listed analytical balance and Archimedes density kit.")
+    elif measurement_mode == "profilometry":
+        controls.extend(
+            [
+                "Use the same powder lot, shielding setup, and coupon geometry for every run.",
+                "Measure every coupon with the same optical-profilometer scan settings.",
+            ]
+        )
+        procedure_outline.extend(
+            [
+                "Produce coupons at each explicit numeric condition inside the stable deposition window.",
+                f"Measure {dv_text.lower()} for every coupon with the optical profilometer.",
+            ]
+        )
+        measurement_plan.extend(
+            [
+                "Use the same scan length and filtering settings for every profilometer trace.",
+                f"Summarize {dv_text.lower()} by condition before comparing the screened settings.",
+            ]
+        )
+        analysis_plan.extend(
+            [
+                f"Compare the mean and spread of {dv_text.lower()} across the screened settings.",
+                "Use the first-pass result to decide whether a narrower surface-finish study is justified.",
+            ]
+        )
+        feasibility_checks.append("Uses only the listed optical profilometer workflow.")
+    else:
+        controls.extend(
+            [
+                f"Keep all non-{iv_lower} settings fixed across all conditions.",
+                "Use one consistent measurement workflow across the full screening set.",
+            ]
+        )
+        procedure_outline.append("Measure the target response with the listed equipment after each run.")
+        measurement_plan.append(f"Summarize {dv_text.lower()} by condition before comparing the screened settings.")
+        analysis_plan.append(f"Compare {dv_text.lower()} across the numeric {iv_lower} levels.")
+        feasibility_checks.append("Keeps the experiment narrow and executable with listed resources.")
+
+    feasibility_checks.append(
+        f"Uses explicit numeric {iv_lower} levels with a narrow first-pass experimental scope."
+    )
+    analysis_plan.append("Use the first-pass result to decide whether a narrower follow-up sweep is justified.")
+
+    return {
+        "measurement_mode": measurement_mode,
+        "resources_used": relevant_resources,
+        "controls": _merge_unique_strings(controls),
+        "procedure_outline": _merge_unique_strings(procedure_outline),
+        "measurement_plan": _merge_unique_strings(measurement_plan),
+        "analysis_plan": _merge_unique_strings(analysis_plan),
+        "feasibility_checks": _merge_unique_strings(feasibility_checks),
+    }
 
 
 def build_baseline_safe_candidate_payload(
@@ -1023,47 +1290,26 @@ def build_baseline_safe_candidate_payload(
         dependent_variables = ["main response"]
 
     iv = independent_variables[0]
-    dv = dependent_variables[0]
     numeric_conditions = build_explicit_numeric_condition_levels(task, independent_variables)
-    relevant_resources = _build_safe_baseline_resources(task)
-    if not relevant_resources:
-        relevant_resources = equipment[:4]
+    task_plan = build_task_specific_baseline_plan(
+        task,
+        independent_variables=independent_variables,
+        dependent_variables=dependent_variables,
+    )
+    relevant_resources = task_plan["resources_used"] or equipment[:4]
 
     evidence_ids = [str(x) for x in task.get("evidence_chunk_ids", []) if str(x).strip()]
-    procedure_outline = [
-        f"Run one DED build at each explicit numeric {iv.lower()} condition within the previously validated stable operating window.",
-        "Keep the same powder lot, shielding setup, geometry, and all non-target process settings across conditions.",
-        "Section each build with the precision saw, then mount, grind, and polish for cross-section imaging.",
-        "Acquire SEM cross-sections for every replicate and record the porosity measurement for each sample.",
-    ]
-    if any(item.lower() == "xrd" for item in equipment):
-        procedure_outline.append("Use XRD only as a secondary sanity check if phase consistency needs confirmation.")
-
-    controls = [
-        f"Keep all non-{iv.lower()} settings fixed across all conditions.",
-        "Use the same NiTi powder lot, argon shielding setup, and sample geometry for every run.",
-        "Prepare every sample with the same sectioning, mounting, grinding, and polishing workflow before SEM imaging.",
-    ]
-    measurement_plan = [
-        f"Quantify {dv.lower()} from SEM cross-sections for every replicate using one consistent image-analysis workflow.",
-        f"Record the exact numeric {iv.lower()} level and replicate identifier for every sample.",
-        f"Summarize {dv.lower()} by condition before comparing the low, midpoint, and high settings.",
-    ]
-    analysis_plan = [
-        f"Compute the mean and spread of {dv.lower()} for each numeric {iv.lower()} level.",
-        f"Plot {dv.lower()} versus {iv.lower()} to check for a monotonic or non-linear trend.",
-        "Use the first-pass result to decide whether a narrower follow-up sweep is justified.",
-    ]
-    feasibility_checks = [
-        "Uses only listed equipment and materials.",
-        f"Uses three explicit numeric {iv.lower()} levels inside the previously validated stable operating window.",
-        "Keeps all non-target settings fixed and includes replicated SEM-based measurements.",
-    ]
+    dv_text = " and ".join(dependent_variables)
+    controls = task_plan["controls"]
+    procedure_outline = task_plan["procedure_outline"]
+    measurement_plan = task_plan["measurement_plan"]
+    analysis_plan = task_plan["analysis_plan"]
+    feasibility_checks = task_plan["feasibility_checks"]
 
     payload = {
         "reasoning_trace": {
             "resource_check": "; ".join(relevant_resources) or "Uses only listed equipment and materials.",
-            "variable_mapping": f"{iv}; {dv}",
+            "variable_mapping": f"{'; '.join(independent_variables)}; {dv_text}",
             "control_strategy": "; ".join(controls),
             "measurement_strategy": "; ".join(measurement_plan),
             "risk_check": "; ".join(feasibility_checks),
@@ -1071,7 +1317,7 @@ def build_baseline_safe_candidate_payload(
         "final_proposal": {
             "goal": str(task.get("goal", "")).strip() or str(existing_proposal.get("goal", "")).strip(),
             "hypothesis": (
-                f"Within the previously validated operating window, changing {iv.lower()} will change {dv.lower()}."
+                f"Within the evidence-supported operating window, changing {iv.lower()} will change {dv_text.lower()}."
             ),
             "resources_used": relevant_resources,
             "independent_variables": independent_variables,
@@ -1102,7 +1348,10 @@ def build_strong_contrast_variant_payload(
     independent_variables = normalize_string_list(proposal.get("independent_variables", []))
     dependent_variables = normalize_string_list(proposal.get("dependent_variables", []))
     iv = (independent_variables or _infer_task_variables(str(task.get("goal", "")))[0] or ["main process setting"])[0]
-    dv = (dependent_variables or _infer_task_variables(str(task.get("goal", "")))[1] or ["main response"])[0]
+    dv = " and ".join(
+        dependent_variables or _infer_task_variables(str(task.get("goal", "")))[1] or ["main response"]
+    )
+    measurement_mode = detect_measurement_mode(task, dependent_variables)
 
     if candidate_rank == 2:
         payload["reasoning_trace"]["risk_check"] = (
@@ -1114,7 +1363,9 @@ def build_strong_contrast_variant_payload(
             independent_variables,
             wider=True,
         )
-        payload["final_proposal"]["design"]["replicates"] = 2
+        payload["final_proposal"]["design"]["replicates"] = (
+            3 if measurement_mode in {"xrd_phase", "density", "microhardness"} else 2
+        )
         payload["final_proposal"]["analysis_plan"] = [
             f"Screen mean {dv.lower()} across the wider numeric {iv.lower()} range.",
             "Use the result to choose a narrower follow-up window.",
@@ -1135,12 +1386,16 @@ def build_strong_contrast_variant_payload(
         )
         payload["final_proposal"]["controls"] = []
         payload["final_proposal"]["design"]["replicates"] = None
+        if measurement_mode in {"geometry", "profilometry"}:
+            payload["final_proposal"]["design"]["conditions"] = payload["final_proposal"]["design"]["conditions"][:2]
         payload["final_proposal"]["analysis_plan"] = [
             f"Compare {dv.lower()} qualitatively across the numeric {iv.lower()} conditions."
         ]
         payload["final_proposal"]["feasibility_checks"] = [
             "Fast contrast variant with intentionally weaker controls and replication.",
         ]
+        if measurement_mode in {"density", "xrd_phase"}:
+            payload["final_proposal"]["evidence_used"] = []
         return normalize_candidate_payload(payload, allow_plain_final_proposal=False), "undercontrolled_variant"
 
     payload["reasoning_trace"]["control_strategy"] = (
@@ -1151,6 +1406,7 @@ def build_strong_contrast_variant_payload(
     )
     payload["final_proposal"]["controls"] = payload["final_proposal"]["controls"][:1]
     payload["final_proposal"]["design"]["replicates"] = None
+    payload["final_proposal"]["design"]["conditions"] = payload["final_proposal"]["design"]["conditions"][:2]
     payload["final_proposal"]["analysis_plan"] = []
     payload["final_proposal"]["feasibility_checks"] = [
         "Minimal contrast variant retained for rejected-pool diversity.",

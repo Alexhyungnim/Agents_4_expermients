@@ -74,12 +74,14 @@ python scripts/09_build_dpo_dataset.py
 
 Notes:
 - `04_build_tasks.py` now supports `--task-source auto|demo|chunks` and `--max-tasks N`. In this worktree, `--task-source demo` is the easiest zero-cost way to create a small multi-task batch.
+- The built-in demo batch is no longer a single repeated SEM-style template. It now spans multiple experiment profiles, including porosity imaging, geometry measurement, phase-fraction XRD, microhardness mapping, Archimedes density, and surface profilometry tasks with different equipment lists and dependent-variable structures.
 - `05c_import_rag_candidates.py` reads `../outputs/rag1_latest_output.json` and `../outputs/rag2_advice.json` by default and converts them into canonical candidate rows.
 - When imported `rag1/rag2` outputs do not carry exact FT `evidence_chunk_ids`, the importer falls back to the matched task's `evidence_chunk_ids` so rule-first grading does not treat them as a false evidence mismatch.
 - `05d_generate_local_candidates.py` appends local-model candidates into the same canonical `candidates.jsonl`.
 - `05d_generate_local_candidates.py` and `06_generate_weak_rag.py` support `--max-tasks N` and `--replace-output`, which makes it easy to rerun a clean batch without manually deleting old rows.
 - `05d_generate_local_candidates.py` now protects `candidate_rank = 1` as a conservative baseline-safe candidate with explicit numeric factor levels, listed resources only, strong controls, clear measurements, and task evidence alignment.
 - `05d_generate_local_candidates.py` derives `candidate_rank >= 2` as controlled contrast variants from that protected baseline instead of asking the local LLM to freestyle every variant from scratch. With the current defaults, each task gets one baseline-safe strong row plus three contrast rows.
+- The baseline-safe candidate builder is now task-aware. It adapts the measurement plan, resources, controls, and analysis wording to the task profile so different task types do not all collapse into the same SEM-and-porosity proposal structure.
 - `07c_rule_grade_candidates.py` tags rule-based failures before any local LLM judging.
 - `06_generate_weak_rag.py` now writes deterministic canonical `weak_baseline` candidate rows directly into `data/processed/candidates/weak_rag_candidates.jsonl`.
 - `07d_local_judge_candidates.py` writes canonical judged rows for both strong and weak sources and also materializes local-only bucket views under `data/processed/judged/local_only_buckets/` from the canonical strong and weak judged files together.

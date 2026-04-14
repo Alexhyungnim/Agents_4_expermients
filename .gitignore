@@ -1,2 +1,10 @@
-.csv
-.xlsx
+.venv/
+**/__pycache__/
+*.pyc
+.DS_Store
+proposal_generator_debug.log
+
+exp_design_factory_next/data/manual/
+exp_design_factory_next/data/processed/candidates/by_task/
+exp_design_factory_next/data/processed/judged/rule_first_candidates.jsonl
+exp_design_factory_next/data/processed/judged/rule_first_weak_rag_candidates.jsonl

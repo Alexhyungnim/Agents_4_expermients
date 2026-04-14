@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         default="manual_gpt_web_judge",
         help="Judge model label to store in the manifest and imported judged rows.",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional cap for exporting only a small calibration subset of candidates.",
+    )
     return parser.parse_args()
 
 
@@ -60,6 +66,10 @@ def main() -> None:
     ]
     if not candidates:
         raise SystemExit(f"No candidate rows found in {args.candidates_path}")
+    if args.limit is not None:
+        if args.limit < 1:
+            raise SystemExit("--limit must be at least 1")
+        candidates = candidates[:args.limit]
 
     prompts_dir = args.export_dir / "prompts"
     manual_raw_dir = args.export_dir / "manual_raw"

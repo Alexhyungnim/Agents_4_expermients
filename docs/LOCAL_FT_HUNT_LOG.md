@@ -503,3 +503,144 @@ python3.11 scripts/09_build_dpo_dataset.py
 - The current 4-task run still relied entirely on structural fallback for the strong judged rows:
   - `judge_model = local_hf_qwen_batch_fallback` for all `16` strong rows
 - This is acceptable for the zero-cost batch factory, but the main throughput bottleneck is still local-judge latency rather than schema wiring or task generation.
+
+## Iteration 8
+
+### Goal
+
+Increase task diversity instead of only candidate diversity, while keeping the local-only FT factory schema-compatible and acceptance-safe.
+
+### Strategy
+
+- Keep the existing safe-diversity candidate logic unchanged.
+- Make the built-in demo task pool itself more diverse across:
+  - experiment goals
+  - variable structures
+  - measurement plans
+  - equipment/resource profiles
+- Make the baseline-safe candidate builder task-aware so those task differences survive into canonical strong candidates instead of collapsing back into the same SEM-style proposal template.
+
+### Code changes in this iteration
+
+- `exp_design_factory_next/scripts/04_build_tasks.py`
+  - expanded the built-in demo task pool from near-duplicate DED NiTi tasks into a small mixed batch covering:
+    - porosity imaging
+    - track-width/build-height geometry
+    - retained-austenite XRD
+    - microhardness mapping
+    - Archimedes density
+    - surface roughness profilometry
+- `exp_design_factory_next/scripts/common.py`
+  - added task-variable splitting for multi-output tasks such as `track width and build height`
+  - added measurement-mode detection so baseline-safe candidates adapt to:
+    - `sem_imaging`
+    - `geometry`
+    - `xrd_phase`
+    - `microhardness`
+    - `density`
+    - `profilometry`
+  - changed baseline-safe candidate construction so `resources_used`, `controls`, `procedure_outline`, `measurement_plan`, `analysis_plan`, and `feasibility_checks` are built from the task profile instead of a single repeated default
+  - updated contrast-variant generation so degradations still branch off the task-specific baseline rather than off a generic SEM-only plan
+- `exp_design_factory_next/README.md`
+  - documented the more diverse built-in demo task batch and the task-aware baseline-safe candidate builder
+
+### Commands run
+
+```bash
+cd work_integration/exp_design_factory_next
+python3.11 scripts/04_build_tasks.py --task-source demo --max-tasks 6
+
+../.venv/bin/python scripts/05d_generate_local_candidates.py \
+  --max-tasks 6 \
+  --n-candidates-per-task 4 \
+  --replace-output
+
+# Judge latency was too high for a tight validation loop on 6 tasks,
+# so the verification pass was rerun on 4 tasks.
+
+python3.11 scripts/04_build_tasks.py --task-source demo --max-tasks 4
+
+../.venv/bin/python scripts/05d_generate_local_candidates.py \
+  --max-tasks 4 \
+  --n-candidates-per-task 4 \
+  --replace-output
+
+python3.11 scripts/06_generate_weak_rag.py \
+  --max-tasks 4 \
+  --replace-output
+
+python3.11 scripts/07c_rule_grade_candidates.py
+python3.11 scripts/07c_rule_grade_candidates.py --candidate-source weak_baseline
+
+../.venv/bin/python scripts/07d_local_judge_candidates.py \
+  --replace-output \
+  --judge-model local_hf_qwen_taskdiv_fast \
+  --model-name Qwen/Qwen2-0.5B-Instruct \
+  --max-new-tokens 220 \
+  --repair-attempts 0
+
+../.venv/bin/python scripts/07d_local_judge_candidates.py \
+  --candidate-source weak_baseline \
+  --replace-output \
+  --judge-model local_hf_qwen_taskdiv_weak \
+  --model-name Qwen/Qwen2-0.5B-Instruct \
+  --max-new-tokens 220 \
+  --repair-attempts 0
+
+python3.11 scripts/08_build_sft_dataset.py
+python3.11 scripts/09_build_dpo_dataset.py
+```
+
+### What happened
+
+- The new demo task batch produced four different verified task profiles in the final validation run:
+  - `task_demo_002`: porosity via SEM imaging
+  - `task_demo_003`: track width and build height via optical metrology
+  - `task_demo_004`: retained austenite via XRD
+  - `task_demo_005`: microhardness via hardness mapping
+- The canonical strong candidates now preserve those differences in their measurement plans and resource usage instead of all reading like the same porosity-SEM experiment.
+- The local-only pipeline stayed end-to-end compatible:
+  - strong candidates
+  - weak-baseline candidates
+  - strong judged rows
+  - weak judged rows
+  - SFT builder
+  - DPO builder
+
+### Output counts from the validation run
+
+- tasks:
+  - `4`
+- strong candidates:
+  - `16`
+- strong judged rows:
+  - `16`
+  - `accepted_silver = 8`
+  - `rejected = 8`
+- weak judged rows:
+  - `4`
+  - `weak_baseline = 4`
+- dataset builders:
+  - `data/processed/datasets/sft/train.jsonl`: `8` rows
+  - `data/processed/datasets/dpo/train.jsonl`: `8` rows
+
+### Score-pattern check
+
+- The judged compatibility totals are no longer a single repeated pattern:
+  - `22 x 4`
+  - `16 x 2`
+  - `15 x 2`
+  - `10 x 7`
+  - `9 x 1`
+- Per-task strong scores now vary as:
+  - `task_demo_002`: `22, 15, 10, 10`
+  - `task_demo_003`: `22, 15, 10, 10`
+  - `task_demo_004`: `22, 16, 9, 10`
+  - `task_demo_005`: `22, 16, 10, 10`
+- This is still rank-shaped, but it is less repetitive than the earlier single-task / near-duplicate-task batch and keeps `accepted_silver` safely nonzero.
+
+### Remaining bottlenecks
+
+- Strong judged rows still came from the structural fallback path in this validation run, so score diversity is improved mainly through more diverse tasks plus task-aware canonical candidate construction, not from richer local-judge reasoning yet.
+- The local judge remains the slowest stage, especially for larger than 4-task validation batches.
+- The second accepted strong row is still often close to a repeated rank-2 pattern. If we need further diversity later, the next safe place to push is task-conditioned rank-2 contrast logic rather than weakening the protected baseline candidate.
