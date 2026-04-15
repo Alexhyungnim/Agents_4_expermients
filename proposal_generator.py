@@ -1,4 +1,4 @@
-mport json
+import json
 from pathlib import Path
 
 import torch
@@ -55,7 +55,7 @@ class LocalQwenLLM:
 # =========================================================
 # Embedding model
 # =========================================================
-LOCAL_EMBED_MODEL = "..../huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+LOCAL_EMBED_MODEL = "/trace/group/tmousavi/gyunghuy/cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 Settings.embed_model = LangchainEmbedding(
     HuggingFaceEmbeddings(
@@ -81,9 +81,13 @@ AVAILABLE_BOM = {
     ],
     "equipment": [
         "welding machine",
+        "thermocouple",
         "microhardness tester",
         "tensile testing machine",
         "optical microscope",
+        "sample cutting tool",
+        "metallographic polishing kit",
+        "pressure control module",
     ],
     "forbidden_items": [
         "EBSD",
@@ -193,7 +197,9 @@ IMPORTANT:
 - Keep the core experiment idea unless narrowing is necessary.
 - Prefer reducing variables over expanding scope.
 - Prefer a simpler first-step experiment that is easier to execute and interpret.
-- Do not blindly copy the feedback. Revise the experiment into a clearer and more feasible plan.
+- Rewrite the full proposal so every section consistently reflects the revised experiment design after applying the feedback.
+- Under "Changes From RAG2 Feedback", briefly state 2-4 concrete changes you made from the feedback.
+- Ignore any RAG2 feedback or self-generated revision that introduces or assumes anything not explicitly listed in the BOM.
 """
 
     return f"""
@@ -208,6 +214,7 @@ Answer in English only.
 Do not output reasoning.
 Do not output <think>.
 Do not assume a specialized process, material subtype unless it is explicitly supported by the BOM.
+
 
 Available BOM / Lab Capability:
 {json.dumps(available_bom, indent=2)}
@@ -227,12 +234,14 @@ Important:
 - Do not use forbidden items.
 - RAG2 will critique feasibility, missing items, and narrowing.
 
+
 Return in this exact format:
 
 Candidate Experiment:
 Why This Is Feasible With Current BOM:
 Borrowed Literature Precedents:
 New Adaptation / Novel Twist:
+Changes from RAG2 Feedback:
 Needed Equipment:
 Needed Materials / Consumables:
 Key Process Parameters To Sweep:
@@ -249,6 +258,7 @@ Rules:
 - Do not reintroduce any equipment, parameter, or geometry option that RAG2 explicitly asked you to remove or avoid.
 - If RAG2 identifies an item as missing from the BOM, do not place it under Needed Equipment in the revision.
 - Treat RAG2 narrowing advice as binding unless it directly conflicts with the BOM.
+
 
 """.strip()
 
@@ -434,6 +444,14 @@ Text:
         proposal = proposal[proposal.find("Candidate Experiment:"):].strip()
 
     proposal = trim_repeated_sections(proposal)
+
+    spill_markers = ["\nOkay,", "\nLet me", "\nBased on the"]
+    for marker in spill_markers:
+        idx = proposal.find(marker)
+        if idx != -1:
+            proposal = proposal[:idx].rstrip()
+            break
+
     proposal += "\n\nSource Papers Used:\n" + "\n".join(f"- {t}" for t in source_titles)
 
     print("\n" + "=" * 100)
