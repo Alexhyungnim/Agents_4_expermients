@@ -873,7 +873,7 @@ def main() -> None:
         })
 
     write_jsonl(out_dir / "chunks_labeled.jsonl", labeled_rows)
-    build_paper_memory_cards(documents, llm, out_dir, max_chunks=args.max_chunks_per_card)
+    # build_paper_memory_cards(documents, llm, out_dir, max_chunks=args.max_chunks_per_card)
 
 
 if __name__ == "__main__":
