@@ -55,7 +55,7 @@ class LocalQwenLLM:
 # =========================================================
 # Embedding model
 # =========================================================
-LOCAL_EMBED_MODEL = "/trace/group/tmousavi/gyunghuy/cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+LOCAL_EMBED_MODEL = ".../huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 Settings.embed_model = LangchainEmbedding(
     HuggingFaceEmbeddings(
