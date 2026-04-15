@@ -49,7 +49,7 @@ class LocalQwenLLM:
 # =========================================================
 # Embedding model
 # =========================================================
-LOCAL_EMBED_MODEL = ".../huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+LOCAL_EMBED_MODEL = "/trace/group/tmousavi/gyunghuy/cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 Settings.embed_model = LangchainEmbedding(
     HuggingFaceEmbeddings(
@@ -216,6 +216,7 @@ Focus only on:
 2. Are there any practical execution limits, uncertainties, or capability constraints within the current BOM?
 3. Is the proposal too broad for a first experiment?
 4. How should the proposal be narrowed so it becomes easier to execute and interpret?
+5. Are the risks listed under RAG1's "Main Risk / Failure Mode" real and important, and if so, how should they be reduced within the current BOM?
 
 Keep the advice practical and simple.
 Prioritize executable first-step experiments over ambitious broad studies.
@@ -224,8 +225,12 @@ Focus on what can realistically be done in the current lab with the listed BOM.
 Prefer identifying practical execution limits over abstract evaluation metrics.
 
 Do not give deep theoretical criticism unless it directly affects feasibility or clarity.
-Do not invent unavailable equipment.
-Do not suggest buying new equipment.
+Also review the "Main Risk / Failure Mode" section from RAG1.
+If any required item, capability, function, or method is not explicitly listed in the BOM, treat it as unavailable.
+When an unavailable item is required, do not repair the proposal by adding or assuming it. Instead, revise the proposal so it uses only explicitly listed BOM items.
+When reducing risk, prefer simplifying the experiment scope, fixing variables, or using coarser BOM-supported measurements rather than introducing any new instrumentation or monitoring not already in the BOM.
+For each major stated risk, judge whether it is a real literature-supported concern or an overstated/secondary concern.
+If it is a real concern, explain how RAG1 should reduce or address it without adding new equipment.
 If something is optional rather than essential, say that clearly.
 
 Use the Science Literature Cards for overall context.
@@ -240,7 +245,7 @@ The JSON schema below uses SRx only as a placeholder example.
 Do not include any explanation before the JSON.
 Your first character must be the opening brace of the JSON object.
 
-The message_to_rag1 should be the practical synthesis of the narrowing_advice.
+The message_to_rag1 should be the practical synthesis of the narrowing_advice and risk_review.
 Do not make it generic.
 Write it as a concrete revision brief that RAG1 can directly follow.
 
@@ -250,6 +255,7 @@ Status meaning:
 - partially_feasible = plausible, but still too broad or under-specified
 - limited = significant execution limits remain
 - not_feasible = not realistically executable with current BOM
+
 
 Available BOM:
 {json.dumps(available_bom, indent=2)}
@@ -288,6 +294,20 @@ Return valid JSON only, in exactly this structure:
       ]
     }}
   ],
+  "risk_review": [
+    {{
+      "risk_from_rag1": "risk text from RAG1",
+      "is_valid_concern": true,
+      "why": "short explanation",
+      "suggested_revision": "short practical advice for reducing or addressing the risk within the current BOM",
+      "literature_support": [
+        {{
+          "reference_id": "SRx",
+          "why_it_supports_this": "short explanation"
+        }}
+      ]
+    }}
+  ],
   "narrowing_advice": [
     {{
       "advice": "advice 1",
@@ -300,7 +320,7 @@ Return valid JSON only, in exactly this structure:
       ]
     }}
   ],
-  "message_to_rag1": "3-6 sentence revision instruction to RAG1. It must explicitly incorporate the key narrowing_advice items in natural language. It must say what to keep, what to fix, what to reduce, and what to avoid in the next revision. It should be specific enough that RAG1 can revise the proposal directly from this message."
+  "message_to_rag1": "3-4 sentence revision instruction to RAG1. It must briefly incorporate the key narrowing_advice and risk_review items in natural language. It must say what to keep, what to fix, and what to avoid in the next revision."
 }}
 """.strip()
 
@@ -467,7 +487,7 @@ Text:
     # =====================================================
     # Generate advice
     # =====================================================
-    raw_output = llm.complete(rag2_prompt, max_new_tokens=1200)
+    raw_output = llm.complete(rag2_prompt, max_new_tokens=1600)
 
     try:
         json_text = extract_json_block(raw_output)
@@ -483,6 +503,15 @@ Text:
                 {
                     "item": "RAG2 structured critique unavailable",
                     "why_it_matters": "The feasibility critique could not be fully structured, so the next revision should stay conservative and BOM-bound.",
+                    "literature_support": []
+                }
+            ],
+            "risk_review": [
+                {
+                    "risk_from_rag1": "Main Risk / Failure Mode could not be reliably reviewed",
+                    "is_valid_concern": True,
+                    "why": "Because RAG2 parsing failed, the safest assumption is that the stated risks should remain conservative and BOM-bound.",
+                    "suggested_revision": "Keep only the most critical execution risks and avoid introducing any new unsupported mitigation step.",
                     "literature_support": []
                 }
             ],
