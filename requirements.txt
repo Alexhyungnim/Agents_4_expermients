@@ -17,3 +17,4 @@ huggingface-hub
 # Notebook / local development
 jupyter
 ipykernel
+openai
