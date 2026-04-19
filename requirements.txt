@@ -1,3 +1,7 @@
+requests
+numpy
+sentence-transformers
+torch
 # Core runtime
 pandas
 openpyxl
